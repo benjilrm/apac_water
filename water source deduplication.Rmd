@@ -590,5 +590,21 @@ nrow(final_dedup%>%filter(delete_semi == F))
 nrow(final_dedup%>%filter(delete_agg == F))
 ```
 
+```{r}
+final_dedup_formatted = final_dedup%>%
+  mutate(
+    private = case_when(
+      source_type_categorised %in% c("Private Tap", "Rainwater Harvesting") ~ 1,
+      T ~ 0),
+    improved = case_when(
+      grepl("Tap|Rainwater|Borehole", source_type_categorised) | source_type_categorised == "Protected Spring" ~ 1,
+      T ~ 0))%>%
+  rename(town_centre = town)%>%
+  select(id, dwd, source_name, year, source_type_categorised, private, improved, lat, long, village, dataset, town_centre, delete_semi, delete_agg)
+
+write.csv(final_dedup_formatted, "Processed data/water_source_deduplicates_apr16_2025.csv", row.names = F)
+```
+
+
 
 
