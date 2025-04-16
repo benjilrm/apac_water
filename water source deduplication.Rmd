@@ -1,0 +1,594 @@
+
+# Setup
+
+Import necessary libraries
+```{r}
+library(tidyverse)
+library(sf)
+library(tmap)
+library(dbscan)
+```
+
+Set default projection, tmap settings, and standard distance for deduplication (in metres)
+```{r}
+crs = 32636
+
+tmap_mode(mode = "view")
+
+distance_dedup = 50
+```
+
+# Import Data
+
+## Town Centres
+
+```{r}
+aduku = st_transform(st_read("Raw data/Town Centres/aduku town centre/aduku_town_centre.shp"), crs)%>%
+  mutate(town = "Aduku")%>%
+  select(town)
+apac = st_transform(st_read("Raw data/Town Centres/apac town centre/apac_town_centre.shp"), crs)%>%
+  mutate(town = "Apac")%>%
+  select(town)
+
+town_centres = rbind(aduku, apac)
+
+rm(aduku, apac)
+```
+
+
+## Raw water source data
+
+Import datasets, ensuring standardised projection, and creating columns to for water source and dataset ID (which will be useful in the deduplication process below)
+```{r}
+everflow = st_transform(st_read("Raw data/Water Sources/everflow_raw.gpkg"), crs)%>%
+  st_join(., town_centres)%>%
+  mutate(dataset = "everflow", 
+         id = paste("everflow", site_num, sep = "_"))
+
+study = st_transform(st_read("Raw data/Water Sources/study_raw.gpkg"), crs)%>%
+  st_join(., town_centres)%>%
+  mutate(dataset = "study",
+         id = paste("study", village_so, sep = "_"))
+
+tgs = st_transform(st_read("Raw data/Water Sources/tgs_raw.gpkg"), crs)%>%
+  st_join(., town_centres)%>%
+  mutate(dataset = "tgs",
+         id = paste("tgs", FID_, sep = "_"))
+         
+ministry = st_transform(st_read("Raw data/Water Sources/ministry_WPDx_raw.gpkg"), crs)%>%
+  st_join(., town_centres)%>%
+  mutate(dataset = "ministry", 
+         id = paste("ministry", row_id, sep = "_"))
+
+lifeline = st_transform(st_read("Raw data/Water Sources/lifeline_WPDx_raw.gpkg"), crs)%>%
+  st_join(., town_centres)%>%
+  mutate(dataset = "lifeline", 
+         id = paste("lifeline", row_id, sep = "_"))
+```
+
+# Set up and standardisation
+Prioritisation of datasets (based on confidence in the information provided for each water source)
+```{r}
+study$priority = 1
+tgs$priority = 2
+everflow$priority = 3
+lifeline$priority = 4
+ministry$priority = 5
+```
+
+
+Now, we want to make sure all datasets have the same columns, so that we can successfully combine the datasets
+```{r}
+everflow_standardised = everflow%>%
+  rename(village = Village, source_name = Source_Nam)%>%
+  mutate(year = NA, source_type = NA, dwd = NA, source_type = "Borehole")
+rm(everflow)
+
+study_standardised = study%>%
+  rename(village = village_na, source_name = source_n_1, source_type = source_typ, dwd = dwd_num, lat = location_g, long = location_1)%>%
+  mutate(year_insta = na_if(year_insta, 0),
+    year = ifelse(!is.na(exact_inst), year(as.Date(exact_inst, format = "%d-%b-%y")), year_insta))
+rm(study)
+
+tgs_standardised = tgs%>%
+  mutate(year = year(DateofCons))%>%
+  rename(lat = Y, long = X, village = Village, dwd = dwd_no_suf, source_name = Name, source_type = SourceType)
+rm(tgs)
+
+ministry_standardised = ministry%>%
+  mutate(village = NA, source_name = NA, dwd = NA)%>%
+  rename(lat = lat_deg, long = lon_deg, year = install_ye, source_type = water_tech)
+rm(ministry)
+
+lifeline_standardised = lifeline%>%
+  mutate(village = NA, source_name = NA, dwd = NA)%>%
+  rename(lat = lat_deg, long = lon_deg, year = install_ye, source_type = water_sour)
+rm(lifeline)
+```
+
+
+Categorise source types in order to facilitate deduplication once we combine the datasets
+```{r}
+source_type_categories = bind_rows(everflow_standardised%>%select(source_type, dataset), lifeline_standardised%>%select(source_type, dataset), ministry_standardised%>%select(source_type, dataset), study_standardised%>%select(source_type, dataset), tgs_standardised%>%select(source_type, dataset))%>%
+  data.frame()%>%
+  mutate(source_type_categorised = case_when(
+    grepl("Rain Water|Rainwater|rain catchment", source_type, ignore.case = T) ~ "Rainwater Harvesting",
+    grepl("Deep Borehole|DBH|Borehole|Lined Well|Protected Shallow Well|Protected dug well|under ground pumped", source_type, ignore.case = T) | source_type %in% c("D", "S", "SW", "Shallow well") | (dataset == "tgs" & is.na(source_type)) ~ "Borehole / Protected Well",
+    grepl("Valley Tank|Dam connected", source_type, ignore.case = T) | source_type %in% c("dam", "Dam", "valley dam") ~ "Dam",
+    grepl("Open Well|Unlined|Unprotected dug well", source_type, ignore.case = T) ~ "Unprotected Well",
+    source_type %in% c("Protected Spring", "Protected spring", "Protected Spring Catchment", "SP") | grepl("Pii me paipo", source_type) ~ "Protected Spring",
+    grepl("Unprotected Spring", source_type, ignore.case = T) ~ "Unprotected Spring",
+    grepl("Tap Stand|Yard Tap|Public Stand Post|Public tap", source_type, ignore.case = T) ~ "Public Tap",
+    grepl("Private Tap|Piped into compound", source_type) ~ "Private Tap",
+    grepl("Lake|Pond|River|Surface water", source_type, ignore.case = T) ~ "Surface Water",
+    T ~ NA))%>%
+  arrange(source_type_categorised)%>%
+  select(1, 4, 2)%>%
+  unique()
+```
+
+Update these categorisations in each individual dataset
+```{r}
+everflow_standardised = left_join(everflow_standardised, source_type_categories, by = c("source_type", "dataset"))
+tgs_standardised = left_join(tgs_standardised, source_type_categories, by = c("source_type", "dataset"))
+study_standardised = left_join(study_standardised, source_type_categories, by = c("source_type", "dataset"))
+ministry_standardised = left_join(ministry_standardised, source_type_categories, by = c("source_type", "dataset"))
+lifeline_standardised = left_join(lifeline_standardised, source_type_categories, by = c("source_type", "dataset"))
+```
+
+# Deduplication
+
+See deduplication protocol [here](https://docs.google.com/document/d/1SclvtB8JBEbSVTBPWrrV_sA2K45God_-OUuH3pwWHTI/edit?tab=t.0)
+
+## Deduplication within datasets
+
+### TGS
+
+First, let's remove any dry or failed boreholes. We'll also get rid of duplicates with the exact same coordinates (or Northing/Easting), or the same DWD (not counting water sources with NAs for DWD).
+```{r}
+tgs_dedup = tgs_standardised%>%
+  mutate(dwd = na_if(dwd, 0),
+         source_name = str_to_lower(source_name))%>%
+  distinct(Northing, Easting, .keep_all = T)%>%
+  filter(!grepl("dry|failed", status, ignore.case = T))%>%
+  select(id, dwd, village, source_name, source_type_categorised, year, lat, long, dataset, town, priority)
+
+tgs_dedup = tgs_dedup%>%
+  filter(!is.na(dwd))%>%
+  distinct(dwd, .keep_all = T)%>%
+  rbind(tgs_dedup%>%filter(is.na(dwd)))
+```
+
+```{r}
+coords <- st_coordinates(tgs_dedup)
+
+# Step 3: Run DBSCAN with 50 meter epsilon and minPts = 1
+# (minPts = 1 ensures each point gets a cluster, even if alone)
+db <- dbscan::dbscan(coords, eps = 50, minPts = 1)
+
+# Step 4: Add cluster to original sf
+tgs_dedup$cluster <- db$cluster
+
+tgs_dedup%>%
+  data.frame()%>%
+  group_by(cluster)%>%
+  filter(n()>1)
+
+tgs_dedup_final = tgs_dedup%>%
+  distinct(cluster, .keep_all = T)%>%
+  mutate(delete_semi = duplicated(cluster),
+         delete_agg = duplicated(cluster))
+```
+
+### Study
+
+Similarly, for our study dataset, we'll get rid of any duplicates with the exact same coordinates, or same DWD (again, not counting water sources with NAs for DWD). We'll also get rid of sources that denote Lake Kwania, since we'll bring in the actual spatial boundary of Lake Kwania later on. 
+```{r}
+study_dedup = study_standardised%>%
+  mutate(dwd = na_if(dwd, "."))%>%
+  arrange(dwd)%>%
+  filter(long != 0)
+
+study_dedup = study_dedup%>%
+  filter(!is.na(dwd))%>%
+  distinct(dwd, .keep_all = T)%>%
+  rbind(., study_dedup%>%filter(is.na(dwd)))%>%
+  filter(str_to_title(source_name) != "Lake Kwania" | is.na(source_name))%>%
+  select(id, dwd, village, source_name, source_type_categorised, year, lat, long, dataset, town, priority)
+```
+
+```{r}
+coords <- st_coordinates(study_dedup)
+
+# Step 3: Run DBSCAN with 50 meter epsilon and minPts = 1.(minPts = 1 ensures each point gets a cluster, even if alone)
+db <- dbscan::dbscan(coords, eps = 50, minPts = 1)
+
+# Add cluster to original sf
+study_dedup$cluster <- db$cluster
+
+study_dedup%>%
+  data.frame()%>%
+  group_by(cluster)%>%
+  filter(n()>1)%>%
+  arrange(cluster)
+
+study_dedup_final = study_dedup %>%
+    group_by(cluster) %>%
+      group_modify(~ {
+        if (nrow(.x) == 1) {.x}  # keep singleton
+        else if (n_distinct(.x$village) == 1) {.x}  # all same village, keep all
+        else {.x[1, , drop = FALSE]}}) %>% # different villages, keep only one
+      ungroup()%>%
+  mutate(delete_semi = duplicated(cluster),
+         delete_agg = duplicated(cluster))
+```
+
+
+
+### Everflow
+```{r}
+everflow_dedup = everflow_standardised%>%
+  distinct(lat, long, .keep_all = T)%>%
+  filter(lat > 0)%>%
+  select(id, dwd, village, source_name, source_type_categorised, year, lat, long, dataset, town, priority)
+```
+
+```{r}
+coords <- st_coordinates(everflow_dedup)
+db <- dbscan::dbscan(coords, eps = 50, minPts = 1)
+everflow_dedup$cluster <- db$cluster
+
+everflow_dedup%>%
+  data.frame()%>%
+  group_by(cluster)%>%
+  filter(n()>1)
+
+everflow_dedup_final = everflow_dedup%>%
+  distinct(cluster, .keep_all = T)%>%
+  mutate(delete_semi = duplicated(cluster),
+         delete_agg = duplicated(cluster))
+```
+
+### Ministry
+```{r}
+ministry_dedup = ministry_standardised%>%
+  distinct(lat, long, .keep_all = T)%>%
+  select(id, dwd, village, source_name, source_type_categorised, year, lat, long, dataset, town, priority)
+```
+
+```{r}
+coords <- st_coordinates(ministry_dedup)
+db <- dbscan::dbscan(coords, eps = 50, minPts = 1)
+ministry_dedup$cluster <- db$cluster
+
+ministry_dedup%>%
+  data.frame()%>%
+  group_by(cluster)%>%
+  filter(n()>1)%>%
+  arrange(cluster)
+
+# Conservative deduplication
+ministry_dedup_final <- ministry_dedup %>%
+  group_by(cluster) %>%
+  group_modify(~ {
+    
+    #keep all sources in town centre
+    if (any(!is.na(.x$town))) {.x} 
+    
+     #keep all sources on their own (not within 50m)
+    else if (nrow(.x) == 1) {.x}
+    
+    #if cluster has multiple points and multiple source types, keep one per source type
+    else if (n_distinct(.x$source_type_categorised) == 1) {.x[1, , drop = FALSE]} 
+    else {.x}}) %>%
+  ungroup()%>%
+
+# Semi deletion flag: TRUE for duplicates within same cluster & source_type, regardless of town centre
+  group_by(cluster, source_type_categorised) %>%
+  mutate(
+    row_num_within_type = row_number(),  # tag which is the first in source_type
+    delete_semi = row_num_within_type > 1) %>%
+  ungroup() %>%
+  select(-row_num_within_type) %>%
+  
+  # Agg deletion flag: TRUE for all except first per cluster
+  mutate(delete_agg = duplicated(cluster)) %>%
+  arrange(cluster)
+
+ministry_dedup_final%>%data.frame()
+
+multisource_clusters = ministry_dedup%>%
+  group_by(cluster) %>%
+  filter(n() > 1 & n_distinct(source_type_categorised) > 1) %>%
+  ungroup()%>%
+  arrange(cluster)
+
+tm_shape(ministry_dedup%>%filter(cluster %in% multisource_clusters$cluster)%>%mutate(cluster = as.factor(cluster)))+
+  tm_dots(col = "cluster", legend.show = F, popup.vars = T)+
+  tm_basemap("Esri.WorldImagery")
+```
+
+### Lifeline
+```{r}
+lifeline_dedup = lifeline_standardised%>%
+  mutate(year = na_if(year, 0))%>%
+  filter(!source_type %in% c("shallo well not inxisten", "Not Completed"))%>%
+  distinct(lat, long, .keep_all = T)%>%
+  select(id, dwd, village, source_name, source_type_categorised, year, lat, long, dataset, town, priority)
+```
+
+```{r}
+coords <- st_coordinates(lifeline_dedup)
+db <- dbscan::dbscan(coords, eps = 50, minPts = 1)
+lifeline_dedup$cluster <- db$cluster
+
+# Conservative deduplication
+lifeline_dedup_final <- lifeline_dedup %>%
+  group_by(cluster) %>%
+  group_modify(~ {
+    
+    #keep all sources in town centre
+    if (any(!is.na(.x$town))) {.x} 
+    
+     #keep all sources on their own (not within 50m)
+    else if (nrow(.x) == 1) {.x}
+    
+    #if cluster has multiple points and multiple source types, keep one per source type
+    else if (n_distinct(.x$source_type_categorised) == 1) {.x[1, , drop = FALSE]} 
+    else {.x}}) %>%
+  ungroup()%>%
+
+# Semi deletion flag: TRUE for duplicates within same cluster & source_type, regardless of town centre
+  group_by(cluster, source_type_categorised) %>%
+  mutate(
+    row_num_within_type = row_number(),  # tag which is the first in source_type
+    delete_semi = row_num_within_type > 1) %>%
+  ungroup() %>%
+  select(-row_num_within_type) %>%
+  
+  # Agg deletion flag: TRUE for all except first per cluster
+  mutate(delete_agg = duplicated(cluster)) %>%
+  arrange(cluster)
+```
+
+
+```{r}
+lifeline_dedup_final%>%data.frame()
+
+multisource_clusters = lifeline_dedup%>%
+  group_by(cluster) %>%
+  filter(n() > 1 & n_distinct(source_type_categorised) > 1) %>%
+  ungroup()%>%
+  arrange(cluster)
+
+tm_shape(lifeline_dedup%>%filter(cluster %in% multisource_clusters$cluster)%>%mutate(cluster = as.factor(cluster)))+
+  tm_dots(col = "cluster", legend.show = F, popup.vars = T)+
+  tm_basemap("Esri.WorldImagery")
+```
+
+
+
+## Duplicates across datasets
+
+### Combining Lifeline/Ministry
+
+```{r}
+wdpx_comb = st_as_sf(rbind(ministry_dedup_final, lifeline_dedup_final), crs = crs)%>%
+  arrange(priority)
+```
+
+```{r}
+coords <- st_coordinates(wdpx_comb)
+db <- dbscan::dbscan(coords, eps = 50, minPts = 1)
+wdpx_comb$cluster <- db$cluster
+
+# Conservative deduplication
+wdpx_dedup <- wdpx_comb %>%
+  group_by(cluster, source_type_categorised) %>%
+  group_modify(~ {
+    
+    # Keep all sources in town centre
+    if (any(!is.na(.x$town))) {
+      .x
+    }
+    
+    # Keep singletons
+    else if (nrow(.x) == 1) {
+      .x
+    }
+    
+    # All from same dataset: keep all
+    else if (n_distinct(.x$dataset) == 1) {
+      .x
+    }
+
+    # Otherwise (multiple datasets): keep one
+    else {
+      .x[1, , drop = FALSE]
+    }
+  }) %>%
+  ungroup()%>%
+
+# Semi deletion flag: TRUE for duplicates within same cluster & source_type, regardless of town centre
+  group_by(cluster, source_type_categorised) %>%
+  mutate(
+    n_datasets = n_distinct(dataset),
+    row_num_within_type = row_number(),
+    delete_semi = case_when(
+      n_datasets > 1 & row_num_within_type > 1 ~ T, T ~ delete_semi))%>%  # retain previous TRUEs
+  ungroup() %>%
+  select(-row_num_within_type, -n_datasets)%>%
+  
+  # Agg deletion flag: same as semi, but keep existing TRUE values
+  mutate(delete_agg = ifelse(delete_semi == T, T, delete_agg),  # keep existing TRUE values
+         consolidated = "wdpx") %>%
+  arrange(cluster)
+```
+
+
+```{r}
+wdpx_dedup%>%data.frame()%>%
+  filter(cluster == 3)
+  filter(id == "lifeline_338999")
+
+multisource_clusters = wdpx_dedup%>%
+  group_by(cluster) %>%
+  filter(n() > 1 & n_distinct(source_type_categorised) > 1) %>%
+  ungroup()%>%
+  arrange(cluster)
+
+tm_shape(wdpx_comb%>%filter(cluster == 124))+
+  tm_dots(col = "dataset", legend.show = F, popup.vars = T)+
+  tm_basemap("Esri.WorldImagery")
+```
+
+
+
+### Combining WDPx / Everflow
+
+```{r}
+wdpx_everflow_comb = st_as_sf(rbind(wdpx_dedup, everflow_dedup_final%>%mutate(consolidated = "everflow")), crs = crs)%>%
+  arrange(priority)
+```
+
+```{r}
+coords <- st_coordinates(wdpx_everflow_comb)
+db <- dbscan::dbscan(coords, eps = 50, minPts = 1)
+wdpx_everflow_comb$cluster <- db$cluster
+
+# Conservative deduplication. semi and agg columns are the same as conservative for this operation
+wdpx_everflow_dedup <- wdpx_everflow_comb %>%
+  group_by(cluster, source_type_categorised) %>%
+  mutate(n_consolidated = n_distinct(consolidated)) %>%
+  filter(n_consolidated == 1 | row_number() == 1) %>%  # if multiple consolidated values, keep only one
+  ungroup() %>%
+  select(-n_consolidated)%>%
+  mutate(consolidated = "wdpx/everflow")
+```
+
+```{r}
+multisource_clusters = wdpx_everflow_comb%>%
+  group_by(cluster) %>%
+  filter(n() > 1 & n_distinct(consolidated) > 1) %>%
+  #filter(n_distinct(source_type_categorised) > 1 )%>%
+  ungroup()%>%
+  arrange(cluster)
+
+multisource_clusters%>%data.frame()
+
+tm_shape(wdpx_everflow_comb%>%filter(cluster == 301))+
+  tm_dots(col = "dataset", legend.show = F, popup.vars = T)+
+  tm_basemap("Esri.WorldImagery")
+```
+
+
+### Combining WDPx/Everflow with TGS
+
+```{r}
+wdpx_everflow_tgs_comb = st_as_sf(rbind(wdpx_everflow_dedup, tgs_dedup_final%>%mutate(consolidated = "tgs")), crs = crs)%>%
+  arrange(priority)
+```
+
+```{r}
+coords <- st_coordinates(wdpx_everflow_tgs_comb)
+db <- dbscan::dbscan(coords, eps = 50, minPts = 1)
+wdpx_everflow_tgs_comb$cluster <- db$cluster
+
+# Conservative deduplication
+wdpx_everflow_tgs_dedup <- wdpx_everflow_tgs_comb %>%
+  group_by(cluster, source_type_categorised, year) %>%
+  mutate(n_consolidated = n_distinct(consolidated)) %>%
+  filter(n_consolidated == 1 | row_number() == 1) %>%  # if multiple consolidated values, keep only one
+  ungroup() %>%
+  select(-n_consolidated)%>%
+  
+   # Semi deduplication flag: across all years, for same cluster + source_type
+  group_by(cluster, source_type_categorised) %>%
+  mutate(
+    n_datasets = n_distinct(consolidated),
+    row_num_within_type = row_number(),
+    delete_semi = ifelse(n_datasets > 1 & row_num_within_type > 1, TRUE, delete_semi))%>%  # preserve existing TRUE
+  ungroup() %>%
+  select(-n_datasets, -row_num_within_type)%>%
+  mutate(consolidated = "wdpx/everflow/tgs",
+         delete_agg = ifelse(delete_semi == TRUE, TRUE, delete_agg))
+```
+
+
+```{r}
+multisource_clusters = wdpx_everflow_tgs_comb%>%
+  group_by(cluster) %>%
+  filter(n() > 1 & n_distinct(source_type_categorised) > 1 & n_distinct(consolidated) > 1) %>%
+  #filter(!is.na(town))%>%
+  ungroup()%>%
+  arrange(cluster)
+
+multisource_clusters%>%data.frame()
+```
+
+
+```{r}
+tm_shape(multisource_clusters%>%filter(cluster %in% multisource_clusters$cluster))+
+  tm_dots(col = "cluster", legend.show = F, popup.vars = T)+
+  tm_basemap("Esri.WorldImagery")
+```
+
+
+
+### Combining WDPx/Everflow/TGS with Study
+
+```{r}
+wdpx_everflow_tgs_study_comb = rbind(wdpx_everflow_tgs_dedup, st_as_sf(study_dedup_final%>%mutate(consolidated = "study")), crs = crs)%>%
+  arrange(priority)
+
+coords <- st_coordinates(wdpx_everflow_tgs_study_comb)
+db <- dbscan::dbscan(coords, eps = 50, minPts = 1)
+wdpx_everflow_tgs_study_comb$cluster <- db$cluster
+
+# Conservative deduplication
+final_dedup <- wdpx_everflow_tgs_study_comb %>%
+  filter(is.na(dwd) | !duplicated(dwd))%>%
+  group_by(cluster, source_type_categorised) %>%
+  mutate(n_consolidated = n_distinct(consolidated)) %>%
+  filter(n_consolidated == 1 | row_number() == 1) %>%  # if multiple consolidated values, keep only one
+  ungroup() %>%
+  select(-n_consolidated)%>%
+  
+   # agg deduplication flag: across all years, for same cluster + source_type
+  group_by(cluster) %>%
+  mutate(
+    n_datasets = n_distinct(consolidated),
+    row_num_within_type = row_number(),
+    delete_agg = ifelse(n_datasets > 1 & row_num_within_type > 1, TRUE, delete_agg))%>%  # preserve existing TRUE
+  ungroup() %>%
+  select(-n_datasets, -row_num_within_type)
+```
+```{r}
+multisource_clusters = final_dedup%>%
+  group_by(cluster) %>%
+  filter(n() > 1) %>%
+  #filter(is.na(town))%>%
+  ungroup()%>%
+  arrange(cluster)
+
+multisource_clusters%>%data.frame()
+```
+
+```{r}
+tm_shape(multisource_clusters%>%filter(cluster %in% multisource_clusters$cluster & cluster == 199))+
+  tm_dots(col = "cluster", legend.show = F, popup.vars = T)+
+  tm_basemap("Esri.WorldImagery")
+```
+
+
+# Final stats
+```{r}
+nrow(final_dedup) 
+
+nrow(final_dedup%>%filter(delete_semi == F)) 
+
+nrow(final_dedup%>%filter(delete_agg == F))
+```
+
+
+
