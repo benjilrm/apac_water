@@ -7,6 +7,7 @@ library(tidyverse)
 library(sf)
 library(tmap)
 library(readxl)
+library(FNN)
 ```
 
 Set default projection, tmap settings, and standard distance for deduplication (in metres)
@@ -88,9 +89,18 @@ tm_shape(healthcare)+
 water_sources = st_transform(st_read("Processed data/water_source_dedups_apr21_2025.gpkg"))
 ```
 
-# Distance Calculations
+
+
+# Preprocessing 
 
 ## Water Source Setup
+
+We're going to create 9 sub-datasets of our master water source dataset: 3x deduplication versions (semi-conservative, aggressive, conservative) * 3x source types (all sources, non-surface sources, improved sources).
+```{r}
+variations = c("semi_all", "semi_nosurf", "semi_imp", "agg_all", "agg_nosurf", "agg_imp", "cons_all", "cons_nosurf", "cons_imp")
+```
+
+We're also going to separate out private and public sources, since we only want households nearby the private sources to have access to them in our proximity analyses. 
 ```{r}
 private_sources = water_sources%>%filter(private == 1)
 
@@ -98,9 +108,12 @@ private_semi = st_coordinates(private_sources%>%filter(delete_semi == F))%>%data
 private_agg = st_coordinates(private_sources%>%filter(delete_agg == F))%>%data.frame()
 private_cons = st_coordinates(private_sources)%>%data.frame()
 
-public_sources = water_sources%>%filter(private == 0)
+private_sources_dfs = list(private_semi, private_agg, private_cons)
+```
 
-public_sources%>%data.frame()
+For both private and public sources, we put the sub-datasets into lists we can loop through for each type of analysis. 
+```{r}
+public_sources = water_sources%>%filter(private == 0)
 
 public_semi_all = st_coordinates(public_sources%>%filter(delete_semi == F))%>%data.frame()
 public_agg_all = st_coordinates(public_sources%>%filter(delete_agg == F))%>%data.frame()
@@ -114,13 +127,12 @@ public_semi_imp = st_coordinates(public_sources%>%filter(delete_semi == F & impr
 public_agg_imp = st_coordinates(public_sources%>%filter(delete_agg == F & improved == 1))%>%data.frame()
 public_cons_imp = st_coordinates(public_sources%>%filter(improved == 1))%>%data.frame()
 
-
 public_sources_dfs = list(public_semi_all, public_semi_nosurf, public_semi_imp, public_agg_all, public_agg_nosurf, public_agg_imp, public_cons_all, public_cons_nosurf, public_cons_imp)
-
-private_sources_dfs = list(private_semi, private_agg, private_cons)
 ```
 
-## Households
+## Households, Schools, and Healthcare
+
+We generate a dataset of household coordinates, and we calculate the distance from each household to any surface water bodies (since this would count as 'all sources' in addition to any point water source data). 
 ```{r}
 HH_coords = st_coordinates(households)%>%data.frame()%>%
   mutate(hh_id = row_number())
@@ -132,6 +144,37 @@ dist_to_lake = households%>%
   select(hh_id, dist_to_lake)
 ```
 
+```{r}
+school_coords = st_coordinates(schools)%>%data.frame()%>%
+  mutate(school_id = row_number())
+
+dist_to_lake = schools%>%
+  mutate(dist_to_lake = st_distance(geometry, water_bodies)%>%apply(1, min),
+         school_id = row_number())%>%
+  data.frame()%>%
+  select(school_id, dist_to_lake)
+```
+
+```{r}
+healthcare_coords = st_coordinates(healthcare)%>%data.frame()%>%
+  mutate(healthcare_id = row_number())
+
+dist_to_lake = healthcare%>%
+  mutate(dist_to_lake = st_distance(geometry, water_bodies)%>%apply(1, min),
+         healthcare_id = row_number())%>%
+  data.frame()%>%
+  select(healthcare_id, dist_to_lake)
+```
+
+# Distance Calculations
+
+## Households
+
+We are going to loop through our list of 9 public water source sub-datasets with different iterations of the distance analysis, as well as the corresponding sub-dataset of private sources. 
+
+We record the distance from each household to the nearest 1) private source (only within the specified radius of 30m), 2) public source, and 3) in the analyses involving all sources (including surface water), to Lake Kwania. We then take the smallest distance for each household and add it as a new column to our original households dataframe. 
+
+While in the loop, we also record the % of households within 100, 500, 1000, 1500, and 2000m of each type of source, saving those to another dataframe we will later use for visualisations. 
 ```{r}
 percents_master = c()
 
@@ -159,9 +202,11 @@ for (i in c(1:length(public_sources_dfs))){
   HH_dists = full_join(pub_dists, priv_dists, by = "hh_id")%>%
     mutate(min_dist = pmin(coalesce(priv_dist, Inf), coalesce(pub_dist, Inf)))
   
- # if (i %in% c(1, 4, 7)){
-    #HH_dists = full_join(HH_dists, dist_to_lake, by = "hh_id")}
-     # mutate(min_dist = pmin(min_dist, dist_to_lake))}
+  if (i %in% c(1, 4, 7)){
+    HH_dists = full_join(HH_dists, dist_to_lake, by = "hh_id")%>%
+      mutate(min_dist = pmin(min_dist, dist_to_lake))}
+  
+  households[[paste0("dist_", variations[i])]] <- HH_dists$min_dist
   
   m100 = length(which(HH_dists$min_dist<=100))/length(HH_dists$min_dist)*100
   m500 = length(which(HH_dists$min_dist<=500))/length(HH_dists$min_dist)*100
@@ -230,16 +275,8 @@ semi
 
 
 ## Schools
-```{r}
-school_coords = st_coordinates(schools)%>%data.frame()%>%
-  mutate(school_id = row_number())
 
-dist_to_lake = schools%>%
-  mutate(dist_to_lake = st_distance(geometry, water_bodies)%>%apply(1, min),
-         school_id = row_number())%>%
-  data.frame()%>%
-  select(school_id, dist_to_lake)
-```
+We now repeat the same process with our school point data. 
 
 ```{r}
 percents_master = c()
@@ -268,9 +305,11 @@ for (i in c(1:length(public_sources_dfs))){
   school_dists = full_join(pub_dists, priv_dists, by = "school_id")%>%
     mutate(min_dist = pmin(coalesce(priv_dist, Inf), coalesce(pub_dist, Inf)))
   
- # if (i %in% c(1, 4, 7)){
-    #school_dists = full_join(school_dists, dist_to_lake, by = "school_id")}
-     # mutate(min_dist = pmin(min_dist, dist_to_lake))}
+  if (i %in% c(1, 4, 7)){
+    school_dists = full_join(school_dists, dist_to_lake, by = "school_id")%>%
+      mutate(min_dist = pmin(min_dist, dist_to_lake))}
+  
+  schools[[paste0("dist_", variations[i])]] <- school_dists$min_dist
   
   m100 = length(which(school_dists$min_dist<=100))/length(school_dists$min_dist)*100
   m500 = length(which(school_dists$min_dist<=500))/length(school_dists$min_dist)*100
@@ -290,16 +329,8 @@ master = data.frame(dedup, source_type, distance, percents_master)
 
 
 ## Healthcare facilities
-```{r}
-healthcare_coords = st_coordinates(healthcare)%>%data.frame()%>%
-  mutate(healthcare_id = row_number())
 
-dist_to_lake = healthcare%>%
-  mutate(dist_to_lake = st_distance(geometry, water_bodies)%>%apply(1, min),
-         healthcare_id = row_number())%>%
-  data.frame()%>%
-  select(healthcare_id, dist_to_lake)
-```
+And lastly, same with healthcare facilities
 
 ```{r}
 percents_master = c()
@@ -328,9 +359,11 @@ for (i in c(1:length(public_sources_dfs))){
   healthcare_dists = full_join(pub_dists, priv_dists, by = "healthcare_id")%>%
     mutate(min_dist = pmin(coalesce(priv_dist, Inf), coalesce(pub_dist, Inf)))
   
- # if (i %in% c(1, 4, 7)){
-    #healthcare_dists = full_join(healthcare_dists, dist_to_lake, by = "healthcare_id")}
-     # mutate(min_dist = pmin(min_dist, dist_to_lake))}
+  if (i %in% c(1, 4, 7)){
+    healthcare_dists = full_join(healthcare_dists, dist_to_lake, by = "healthcare_id")%>%
+      mutate(min_dist = pmin(min_dist, dist_to_lake))}
+  
+  healthcare[[paste0("dist_", variations[i])]] <- healthcare_dists$min_dist
   
   m100 = length(which(healthcare_dists$min_dist<=100))/length(healthcare_dists$min_dist)*100
   m500 = length(which(healthcare_dists$min_dist<=500))/length(healthcare_dists$min_dist)*100
@@ -396,4 +429,5 @@ semi = ggplot(master%>%filter(dedup == "Semi-Conservative"), aes(distance, perce
 #ggsave("distance_to_source_semi.jpg", semi, width = 7, height = 7)
 semi
 ```
+# # of sources within radius
 
