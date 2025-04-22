@@ -14,6 +14,8 @@ Set default projection, tmap settings, and standard distance for deduplication (
 crs = 32636
 
 tmap_mode(mode = "view")
+
+priv_dist = 30
 ```
 
 # Import Data
@@ -88,7 +90,7 @@ water_sources = st_transform(st_read("Processed data/water_source_dedups_apr21_2
 
 # Distance Calculations
 
-Private sources
+## Water Source Setup
 ```{r}
 private_sources = water_sources%>%filter(private == 1)
 
@@ -113,28 +115,22 @@ public_agg_imp = st_coordinates(public_sources%>%filter(delete_agg == F & improv
 public_cons_imp = st_coordinates(public_sources%>%filter(improved == 1))%>%data.frame()
 
 
-
 public_sources_dfs = list(public_semi_all, public_semi_nosurf, public_semi_imp, public_agg_all, public_agg_nosurf, public_agg_imp, public_cons_all, public_cons_nosurf, public_cons_imp)
 
 private_sources_dfs = list(private_semi, private_agg, private_cons)
 ```
 
+## Households
 ```{r}
 HH_coords = st_coordinates(households)%>%data.frame()%>%
   mutate(hh_id = row_number())
-
-priv_dist = 30
 
 dist_to_lake = households%>%
   mutate(dist_to_lake = st_distance(geom, water_bodies)%>%apply(1, min),
          hh_id = row_number())%>%
   data.frame()%>%
   select(hh_id, dist_to_lake)
-
-dist_to_lake
 ```
-
-
 
 ```{r}
 percents_master = c()
@@ -181,8 +177,6 @@ source_type = rep(rep(c("Any Source (incl. surf. water)", "Any Source (excl. sur
 distance = rep(c("100", "500", "1000", "1500", "2000"), 9)
 
 master = data.frame(dedup, source_type, distance, percents_master)
-
-percents_master
 ```
 
 ```{r}
@@ -225,6 +219,175 @@ semi = ggplot(master%>%filter(dedup == "Semi-Conservative"), aes(distance, perce
   scale_fill_manual(values=c("coral", "skyblue3", "green3"))+
   theme(axis.text.x=element_text(hjust=0.5), plot.title = element_text(hjust = 0.5, size = 14), plot.subtitle = element_text(hjust = 0.5, size = 8), legend.text = element_text(size=10), legend.title = element_text(size=12))+
   labs(y="Households Within Distance (%)", x="Distance to Water Source (m)", fill="Water Source Type")+
+  theme(legend.position="bottom", legend.box = "vertical")+
+  guides(fill=guide_legend(nrow=3,byrow=TRUE))+
+  scale_x_discrete(limits = c("100", "500", "1000", "1500", "2000"), 
+                   labels = c("100", "500", "1000", "1500", "2000"))+
+  geom_text(aes(label=round(percents_master, 1)), position=position_dodge(width=0.9), vjust=-0.25, size = 3)
+#ggsave("distance_to_source_semi.jpg", semi, width = 7, height = 7)
+semi
+```
+
+
+## Schools
+```{r}
+school_coords = st_coordinates(schools)%>%data.frame()%>%
+  mutate(school_id = row_number())
+
+dist_to_lake = schools%>%
+  mutate(dist_to_lake = st_distance(geometry, water_bodies)%>%apply(1, min),
+         school_id = row_number())%>%
+  data.frame()%>%
+  select(school_id, dist_to_lake)
+```
+
+```{r}
+percents_master = c()
+
+for (i in c(1:length(public_sources_dfs))){
+  pub_water_coords = public_sources_dfs[[i]]
+
+  if (i < 4){
+    private_water_coords = private_sources_dfs[[1]]}
+  else if (i < 7){
+    private_water_coords = private_sources_dfs[[2]]}
+  else {
+    private_water_coords = private_sources_dfs[[3]]}
+    
+  priv_dists = data.frame(get.knnx(private_water_coords, school_coords%>%select(-school_id), k=1))%>%
+    mutate(school_id = row_number())%>%
+    filter(nn.dist <= priv_dist)%>%
+    rename(priv_dist = nn.dist)%>%
+    select(-nn.index)
+  
+  pub_dists = data.frame(get.knnx(pub_water_coords, school_coords%>%select(-school_id), k=1))%>%
+    mutate(school_id = row_number())%>%
+    rename(pub_dist = nn.dist)%>%
+    select(-nn.index)
+  
+  school_dists = full_join(pub_dists, priv_dists, by = "school_id")%>%
+    mutate(min_dist = pmin(coalesce(priv_dist, Inf), coalesce(pub_dist, Inf)))
+  
+ # if (i %in% c(1, 4, 7)){
+    #school_dists = full_join(school_dists, dist_to_lake, by = "school_id")}
+     # mutate(min_dist = pmin(min_dist, dist_to_lake))}
+  
+  m100 = length(which(school_dists$min_dist<=100))/length(school_dists$min_dist)*100
+  m500 = length(which(school_dists$min_dist<=500))/length(school_dists$min_dist)*100
+  m1000 = length(which(school_dists$min_dist<=1000))/length(school_dists$min_dist)*100
+  m1500 = length(which(school_dists$min_dist<=1500))/length(school_dists$min_dist)*100
+  m2000 = length(which(school_dists$min_dist<=2000))/length(school_dists$min_dist)*100
+  percents = c(m100, m500, m1000, m1500, m2000)
+  
+  percents_master = append(percents_master, percents)}
+
+dedup = rep(c("Semi-Conservative", "Aggressive", "Conservative"), each = 15)
+source_type = rep(rep(c("Any Source (incl. surf. water)", "Any Source (excl. surf. water)", "Improved Source"), each = 5), 3)
+distance = rep(c("100", "500", "1000", "1500", "2000"), 9)
+
+master = data.frame(dedup, source_type, distance, percents_master)
+```
+
+
+## Healthcare facilities
+```{r}
+healthcare_coords = st_coordinates(healthcare)%>%data.frame()%>%
+  mutate(healthcare_id = row_number())
+
+dist_to_lake = healthcare%>%
+  mutate(dist_to_lake = st_distance(geometry, water_bodies)%>%apply(1, min),
+         healthcare_id = row_number())%>%
+  data.frame()%>%
+  select(healthcare_id, dist_to_lake)
+```
+
+```{r}
+percents_master = c()
+
+for (i in c(1:length(public_sources_dfs))){
+  pub_water_coords = public_sources_dfs[[i]]
+
+  if (i < 4){
+    private_water_coords = private_sources_dfs[[1]]}
+  else if (i < 7){
+    private_water_coords = private_sources_dfs[[2]]}
+  else {
+    private_water_coords = private_sources_dfs[[3]]}
+    
+  priv_dists = data.frame(get.knnx(private_water_coords, healthcare_coords%>%select(-healthcare_id), k=1))%>%
+    mutate(healthcare_id = row_number())%>%
+    filter(nn.dist <= priv_dist)%>%
+    rename(priv_dist = nn.dist)%>%
+    select(-nn.index)
+  
+  pub_dists = data.frame(get.knnx(pub_water_coords, healthcare_coords%>%select(-healthcare_id), k=1))%>%
+    mutate(healthcare_id = row_number())%>%
+    rename(pub_dist = nn.dist)%>%
+    select(-nn.index)
+  
+  healthcare_dists = full_join(pub_dists, priv_dists, by = "healthcare_id")%>%
+    mutate(min_dist = pmin(coalesce(priv_dist, Inf), coalesce(pub_dist, Inf)))
+  
+ # if (i %in% c(1, 4, 7)){
+    #healthcare_dists = full_join(healthcare_dists, dist_to_lake, by = "healthcare_id")}
+     # mutate(min_dist = pmin(min_dist, dist_to_lake))}
+  
+  m100 = length(which(healthcare_dists$min_dist<=100))/length(healthcare_dists$min_dist)*100
+  m500 = length(which(healthcare_dists$min_dist<=500))/length(healthcare_dists$min_dist)*100
+  m1000 = length(which(healthcare_dists$min_dist<=1000))/length(healthcare_dists$min_dist)*100
+  m1500 = length(which(healthcare_dists$min_dist<=1500))/length(healthcare_dists$min_dist)*100
+  m2000 = length(which(healthcare_dists$min_dist<=2000))/length(healthcare_dists$min_dist)*100
+  percents = c(m100, m500, m1000, m1500, m2000)
+  
+  percents_master = append(percents_master, percents)}
+
+dedup = rep(c("Semi-Conservative", "Aggressive", "Conservative"), each = 15)
+source_type = rep(rep(c("Any Source (incl. surf. water)", "Any Source (excl. surf. water)", "Improved Source"), each = 5), 3)
+distance = rep(c("100", "500", "1000", "1500", "2000"), 9)
+
+master = data.frame(dedup, source_type, distance, percents_master)
+```
+
+```{r}
+master$source_type = factor(master$source_type, levels = c("Any Source (incl. surf. water)", "Any Source (excl. surf. water)", "Improved Source"))
+master$distance = distance
+
+agg = ggplot(master%>%filter(dedup == "Aggressive"), aes(distance, percents_master, fill = source_type))+
+  geom_col(colour = "black", position = position_dodge(), alpha = 0.8)+
+  theme_bw(base_size=14)+
+  scale_fill_manual(values=c("coral", "skyblue3", "green3"))+
+  theme(axis.text.x=element_text(hjust=0.5), plot.title = element_text(hjust = 0.5, size = 14), plot.subtitle = element_text(hjust = 0.5, size = 8), legend.text = element_text(size=10), legend.title = element_text(size=12))+
+  labs(y="healthcares Within Distance (%)", x="Distance to Water Source (m)", fill="Water Source Type")+
+  theme(legend.position="bottom", legend.box = "vertical")+
+  guides(fill=guide_legend(nrow=3,byrow=TRUE))+
+  scale_x_discrete(limits = c("100", "500", "1000", "1500", "2000"), 
+                   labels = c("100", "500", "1000", "1500", "2000"))+
+  geom_text(aes(label=round(percents_master, 1)), position=position_dodge(width=0.9), vjust=-0.25, size = 3)
+
+agg
+
+#ggsave("distance_to_source_agg.jpg", agg, width = 7, height = 7)
+
+cons = ggplot(master%>%filter(dedup == "Conservative"), aes(distance, percents_master, fill = source_type))+
+  geom_col(colour = "black", position = position_dodge(), alpha = 0.8)+
+  theme_bw(base_size=14)+
+  scale_fill_manual(values=c("coral", "skyblue3", "green3"))+
+  theme(axis.text.x=element_text(hjust=0.5), plot.title = element_text(hjust = 0.5, size = 14), plot.subtitle = element_text(hjust = 0.5, size = 8), legend.text = element_text(size=10), legend.title = element_text(size=12))+
+  labs(y="healthcares Within Distance (%)", x="Distance to Water Source (m)", fill="Water Source Type")+
+  theme(legend.position="bottom", legend.box = "vertical")+
+  guides(fill=guide_legend(nrow=3,byrow=TRUE))+
+  scale_x_discrete(limits = c("100", "500", "1000", "1500", "2000"), 
+                   labels = c("100", "500", "1000", "1500", "2000"))+
+  geom_text(aes(label=round(percents_master, 1)), position=position_dodge(width=0.9), vjust=-0.25, size = 3)
+#ggsave("distance_to_source_cons.jpg", cons, width = 7, height = 7)
+cons
+
+semi = ggplot(master%>%filter(dedup == "Semi-Conservative"), aes(distance, percents_master, fill = source_type))+
+  geom_col(colour = "black", position = position_dodge(), alpha = 0.8)+
+  theme_bw(base_size=14)+
+  scale_fill_manual(values=c("coral", "skyblue3", "green3"))+
+  theme(axis.text.x=element_text(hjust=0.5), plot.title = element_text(hjust = 0.5, size = 14), plot.subtitle = element_text(hjust = 0.5, size = 8), legend.text = element_text(size=10), legend.title = element_text(size=12))+
+  labs(y="healthcares Within Distance (%)", x="Distance to Water Source (m)", fill="Water Source Type")+
   theme(legend.position="bottom", legend.box = "vertical")+
   guides(fill=guide_legend(nrow=3,byrow=TRUE))+
   scale_x_discrete(limits = c("100", "500", "1000", "1500", "2000"), 
