@@ -20,6 +20,12 @@ distance_dedup = 50
 
 # Import Data
 
+## Apac/Kwania Boundaries
+```{r}
+apac_kwania = st_transform(st_read("Raw data/Apac Kwania/ApacKwania.shp"), crs)
+```
+
+
 ## Town Centres
 
 ```{r}
@@ -426,7 +432,7 @@ wdpx_dedup <- wdpx_comb %>%
 ```
 
 
-```{r}
+```{r, eval = F}
 wdpx_dedup%>%data.frame()%>%
   filter(cluster == 3)
   filter(id == "lifeline_338999")
@@ -466,7 +472,7 @@ wdpx_everflow_dedup <- wdpx_everflow_comb %>%
   mutate(consolidated = "wdpx/everflow")
 ```
 
-```{r}
+```{r, eval = F}
 multisource_clusters = wdpx_everflow_comb%>%
   group_by(cluster) %>%
   filter(n() > 1 & n_distinct(consolidated) > 1) %>%
@@ -515,7 +521,7 @@ wdpx_everflow_tgs_dedup <- wdpx_everflow_tgs_comb %>%
 ```
 
 
-```{r}
+```{r, eval = F}
 multisource_clusters = wdpx_everflow_tgs_comb%>%
   group_by(cluster) %>%
   filter(n() > 1 & n_distinct(source_type_categorised) > 1 & n_distinct(consolidated) > 1) %>%
@@ -527,7 +533,7 @@ multisource_clusters%>%data.frame()
 ```
 
 
-```{r}
+```{r, eval = F}
 tm_shape(multisource_clusters%>%filter(cluster %in% multisource_clusters$cluster))+
   tm_dots(col = "cluster", legend.show = F, popup.vars = T)+
   tm_basemap("Esri.WorldImagery")
@@ -538,7 +544,7 @@ tm_shape(multisource_clusters%>%filter(cluster %in% multisource_clusters$cluster
 ### Combining WDPx/Everflow/TGS with Study
 
 ```{r}
-wdpx_everflow_tgs_study_comb = rbind(wdpx_everflow_tgs_dedup, st_as_sf(study_dedup_final%>%mutate(consolidated = "study")), crs = crs)%>%
+wdpx_everflow_tgs_study_comb = rbind(wdpx_everflow_tgs_dedup, st_as_sf(study_dedup_final%>%mutate(consolidated = "study"), crs = crs))%>%
   arrange(priority)
 
 coords <- st_coordinates(wdpx_everflow_tgs_study_comb)
@@ -563,7 +569,8 @@ final_dedup <- wdpx_everflow_tgs_study_comb %>%
   ungroup() %>%
   select(-n_datasets, -row_num_within_type)
 ```
-```{r}
+
+```{r, eval = F}
 multisource_clusters = final_dedup%>%
   group_by(cluster) %>%
   filter(n() > 1) %>%
@@ -574,7 +581,7 @@ multisource_clusters = final_dedup%>%
 multisource_clusters%>%data.frame()
 ```
 
-```{r}
+```{r, eval = F}
 tm_shape(multisource_clusters%>%filter(cluster %in% multisource_clusters$cluster & cluster == 199))+
   tm_dots(col = "cluster", legend.show = F, popup.vars = T)+
   tm_basemap("Esri.WorldImagery")
@@ -596,14 +603,36 @@ final_dedup_formatted = final_dedup%>%
     private = case_when(
       source_type_categorised %in% c("Private Tap", "Rainwater Harvesting") ~ 1,
       T ~ 0),
+    surface = case_when(source_type_categorised %in% c("Dam", "Surface Water") ~ 1, T ~ 0),
     improved = case_when(
       grepl("Tap|Rainwater|Borehole", source_type_categorised) | source_type_categorised == "Protected Spring" ~ 1,
       T ~ 0))%>%
   rename(town_centre = town)%>%
-  select(id, dwd, source_name, year, source_type_categorised, private, improved, lat, long, village, dataset, town_centre, delete_semi, delete_agg)
+  select(id, dwd, source_name, year, source_type_categorised, private, surface, improved, lat, long, village, dataset, town_centre, delete_semi, delete_agg)%>%
+  st_filter(., st_buffer(apac_kwania, 500), .pred = !st_intersects)
 
-write.csv(final_dedup_formatted, "Processed data/water_source_deduplicates_apr16_2025.csv", row.names = F)
+st_write(final_dedup_formatted, "Processed data/water_source_dedups_apr21_2025.gpkg", delete_dsn = T)
+st_write(final_dedup_formatted, "Processed data/water_source_dedups_apr21_2025.shp", delete_dsn = T)
+write.csv(final_dedup_formatted, "Processed data/water_source_deduplicates_apr21_2025.csv", row.names = F)
 ```
+
+
+```{r}
+semi = final_dedup_formatted%>%filter(delete_semi == F)
+agg = final_dedup_formatted%>%filter(delete_agg == F)
+
+all_dups = rbind(tgs_standardised%>%select(id, dwd, village, source_name, source_type_categorised, year, lat, long, dataset, town, priority), study_standardised%>%select(id, dwd, village, source_name, source_type_categorised, year, lat, long, dataset, town, priority),
+      ministry_standardised%>%select(id, dwd, village, source_name, source_type_categorised, year, lat, long, dataset, town, priority),
+      lifeline_standardised%>%select(id, dwd, village, source_name, source_type_categorised, year, lat, long, dataset, town, priority),
+      everflow_standardised%>%select(id, dwd, village, source_name, source_type_categorised, year, lat, long, dataset, town, priority))%>%
+  mutate(in_conservative = ifelse(id %in% final_dedup_formatted$id, 1, 0),
+         in_semi = ifelse(id %in% semi$id, 1, 0),
+         in_agg = ifelse(id %in% agg$id, 1, 0))
+
+st_write(all_dups, "Processed data/all_duplicates_apr21.shp")
+```
+
+
 
 
 
