@@ -1,0 +1,236 @@
+
+# Setup
+
+Import necessary libraries
+```{r}
+library(tidyverse)
+library(sf)
+library(tmap)
+library(readxl)
+```
+
+Set default projection, tmap settings, and standard distance for deduplication (in metres)
+```{r}
+crs = 32636
+
+tmap_mode(mode = "view")
+```
+
+# Import Data
+
+## Apac / Kwania Boundary
+```{r}
+apac_kwania = st_transform(st_read("Raw data/Apac Kwania/ApacKwania.shp"), crs)
+```
+
+
+## Town Centres
+```{r}
+aduku = st_transform(st_read("Raw data/Town Centres/aduku town centre/aduku_town_centre.shp"), crs)%>%
+  mutate(town = "Aduku")%>%
+  select(town)
+apac = st_transform(st_read("Raw data/Town Centres/apac town centre/apac_town_centre.shp"), crs)%>%
+  mutate(town = "Apac")%>%
+  select(town)
+
+town_centres = rbind(aduku, apac)
+
+rm(aduku, apac)
+```
+
+## Households
+```{r}
+households = st_transform(st_read("Raw data/Households/households_raw.gpkg"), crs)%>%
+  st_filter(., apac_kwania, .pred = st_intersects())%>%
+  st_join(., town_centres)
+```
+
+## Water bodies
+```{r}
+water_bodies = st_transform(st_read("Raw data/Water bodies/hotosm_uga_waterways_polygons_shp.shp"), crs)%>%
+  st_filter(., st_buffer(apac_kwania, 1000))
+```
+
+
+
+## Schools
+
+OpenStreetMap point data of schools downloaded from [HumData](https://data.humdata.org/dataset/hotosm_uga_education_facilities)
+```{r}
+schools = st_transform(st_read("Raw data/Schools/hotosm_uga_education_facilities_points_shp.shp"), crs)%>%
+  st_filter(., apac_kwania, .pred = st_intersects())%>%
+  st_join(., town_centres)%>%
+  distinct(name, .keep_all = T)
+
+tm_shape(schools)+
+  tm_dots()+
+  tm_basemap("Esri.WorldImagery")
+```
+
+## Healthcare facilities
+
+Point data with lat/longs healthcare facilities from [Maina et al., 2019](https://www.nature.com/articles/s41597-019-0142-2#code-availability) and downloaded from [HumData](https://data.humdata.org/dataset/health-facilities-in-sub-saharan-africa)
+```{r}
+healthcare = st_transform(st_read("Raw data/Healthcare Facilities/sub-saharan_health_facilities.shp"), crs)%>%
+  st_filter(., apac_kwania, .pred = st_intersects())%>%
+  st_join(., town_centres)
+
+tm_shape(healthcare)+
+  tm_dots()+
+  tm_basemap("Esri.WorldImagery")
+```
+
+
+## Deduplicated water sources
+```{r}
+water_sources = st_transform(st_read("Processed data/water_source_dedups_apr21_2025.gpkg"))
+```
+
+# Distance Calculations
+
+Private sources
+```{r}
+private_sources = water_sources%>%filter(private == 1)
+
+private_semi = st_coordinates(private_sources%>%filter(delete_semi == F))%>%data.frame()
+private_agg = st_coordinates(private_sources%>%filter(delete_agg == F))%>%data.frame()
+private_cons = st_coordinates(private_sources)%>%data.frame()
+
+public_sources = water_sources%>%filter(private == 0)
+
+public_sources%>%data.frame()
+
+public_semi_all = st_coordinates(public_sources%>%filter(delete_semi == F))%>%data.frame()
+public_agg_all = st_coordinates(public_sources%>%filter(delete_agg == F))%>%data.frame()
+public_cons_all = st_coordinates(public_sources)%>%data.frame()
+
+public_semi_nosurf = st_coordinates(public_sources%>%filter(delete_semi == F & surface == 0))%>%data.frame()
+public_agg_nosurf = st_coordinates(public_sources%>%filter(delete_agg == F & surface == 0))%>%data.frame()
+public_cons_nosurf = st_coordinates(public_sources%>%filter(surface == 0))%>%data.frame()
+
+public_semi_imp = st_coordinates(public_sources%>%filter(delete_semi == F & improved == 1))%>%data.frame()
+public_agg_imp = st_coordinates(public_sources%>%filter(delete_agg == F & improved == 1))%>%data.frame()
+public_cons_imp = st_coordinates(public_sources%>%filter(improved == 1))%>%data.frame()
+
+
+
+public_sources_dfs = list(public_semi_all, public_semi_nosurf, public_semi_imp, public_agg_all, public_agg_nosurf, public_agg_imp, public_cons_all, public_cons_nosurf, public_cons_imp)
+
+private_sources_dfs = list(private_semi, private_agg, private_cons)
+```
+
+```{r}
+HH_coords = st_coordinates(households)%>%data.frame()%>%
+  mutate(hh_id = row_number())
+
+priv_dist = 30
+
+dist_to_lake = households%>%
+  mutate(dist_to_lake = st_distance(geom, water_bodies)%>%apply(1, min),
+         hh_id = row_number())%>%
+  data.frame()%>%
+  select(hh_id, dist_to_lake)
+
+dist_to_lake
+```
+
+
+
+```{r}
+percents_master = c()
+
+for (i in c(1:length(public_sources_dfs))){
+  pub_water_coords = public_sources_dfs[[i]]
+
+  if (i < 4){
+    private_water_coords = private_sources_dfs[[1]]}
+  else if (i < 7){
+    private_water_coords = private_sources_dfs[[2]]}
+  else {
+    private_water_coords = private_sources_dfs[[3]]}
+    
+  priv_dists = data.frame(get.knnx(private_water_coords, HH_coords%>%select(-hh_id), k=1))%>%
+    mutate(hh_id = row_number())%>%
+    filter(nn.dist <= priv_dist)%>%
+    rename(priv_dist = nn.dist)%>%
+    select(-nn.index)
+  
+  pub_dists = data.frame(get.knnx(pub_water_coords, HH_coords%>%select(-hh_id), k=1))%>%
+    mutate(hh_id = row_number())%>%
+    rename(pub_dist = nn.dist)%>%
+    select(-nn.index)
+  
+  HH_dists = full_join(pub_dists, priv_dists, by = "hh_id")%>%
+    mutate(min_dist = pmin(coalesce(priv_dist, Inf), coalesce(pub_dist, Inf)))
+  
+ # if (i %in% c(1, 4, 7)){
+    #HH_dists = full_join(HH_dists, dist_to_lake, by = "hh_id")}
+     # mutate(min_dist = pmin(min_dist, dist_to_lake))}
+  
+  m100 = length(which(HH_dists$min_dist<=100))/length(HH_dists$min_dist)*100
+  m500 = length(which(HH_dists$min_dist<=500))/length(HH_dists$min_dist)*100
+  m1000 = length(which(HH_dists$min_dist<=1000))/length(HH_dists$min_dist)*100
+  m1500 = length(which(HH_dists$min_dist<=1500))/length(HH_dists$min_dist)*100
+  m2000 = length(which(HH_dists$min_dist<=2000))/length(HH_dists$min_dist)*100
+  percents = c(m100, m500, m1000, m1500, m2000)
+  
+  percents_master = append(percents_master, percents)}
+
+dedup = rep(c("Semi-Conservative", "Aggressive", "Conservative"), each = 15)
+source_type = rep(rep(c("Any Source (incl. surf. water)", "Any Source (excl. surf. water)", "Improved Source"), each = 5), 3)
+distance = rep(c("100", "500", "1000", "1500", "2000"), 9)
+
+master = data.frame(dedup, source_type, distance, percents_master)
+
+percents_master
+```
+
+```{r}
+master$source_type = factor(master$source_type, levels = c("Any Source (incl. surf. water)", "Any Source (excl. surf. water)", "Improved Source"))
+master$distance = distance
+
+agg = ggplot(master%>%filter(dedup == "Aggressive"), aes(distance, percents_master, fill = source_type))+
+  geom_col(colour = "black", position = position_dodge(), alpha = 0.8)+
+  theme_bw(base_size=14)+
+  scale_fill_manual(values=c("coral", "skyblue3", "green3"))+
+  theme(axis.text.x=element_text(hjust=0.5), plot.title = element_text(hjust = 0.5, size = 14), plot.subtitle = element_text(hjust = 0.5, size = 8), legend.text = element_text(size=10), legend.title = element_text(size=12))+
+  labs(y="Households Within Distance (%)", x="Distance to Water Source (m)", fill="Water Source Type")+
+  theme(legend.position="bottom", legend.box = "vertical")+
+  guides(fill=guide_legend(nrow=3,byrow=TRUE))+
+  scale_x_discrete(limits = c("100", "500", "1000", "1500", "2000"), 
+                   labels = c("100", "500", "1000", "1500", "2000"))+
+  geom_text(aes(label=round(percents_master, 1)), position=position_dodge(width=0.9), vjust=-0.25, size = 3)
+
+agg
+
+#ggsave("distance_to_source_agg.jpg", agg, width = 7, height = 7)
+
+cons = ggplot(master%>%filter(dedup == "Conservative"), aes(distance, percents_master, fill = source_type))+
+  geom_col(colour = "black", position = position_dodge(), alpha = 0.8)+
+  theme_bw(base_size=14)+
+  scale_fill_manual(values=c("coral", "skyblue3", "green3"))+
+  theme(axis.text.x=element_text(hjust=0.5), plot.title = element_text(hjust = 0.5, size = 14), plot.subtitle = element_text(hjust = 0.5, size = 8), legend.text = element_text(size=10), legend.title = element_text(size=12))+
+  labs(y="Households Within Distance (%)", x="Distance to Water Source (m)", fill="Water Source Type")+
+  theme(legend.position="bottom", legend.box = "vertical")+
+  guides(fill=guide_legend(nrow=3,byrow=TRUE))+
+  scale_x_discrete(limits = c("100", "500", "1000", "1500", "2000"), 
+                   labels = c("100", "500", "1000", "1500", "2000"))+
+  geom_text(aes(label=round(percents_master, 1)), position=position_dodge(width=0.9), vjust=-0.25, size = 3)
+#ggsave("distance_to_source_cons.jpg", cons, width = 7, height = 7)
+cons
+
+semi = ggplot(master%>%filter(dedup == "Semi-Conservative"), aes(distance, percents_master, fill = source_type))+
+  geom_col(colour = "black", position = position_dodge(), alpha = 0.8)+
+  theme_bw(base_size=14)+
+  scale_fill_manual(values=c("coral", "skyblue3", "green3"))+
+  theme(axis.text.x=element_text(hjust=0.5), plot.title = element_text(hjust = 0.5, size = 14), plot.subtitle = element_text(hjust = 0.5, size = 8), legend.text = element_text(size=10), legend.title = element_text(size=12))+
+  labs(y="Households Within Distance (%)", x="Distance to Water Source (m)", fill="Water Source Type")+
+  theme(legend.position="bottom", legend.box = "vertical")+
+  guides(fill=guide_legend(nrow=3,byrow=TRUE))+
+  scale_x_discrete(limits = c("100", "500", "1000", "1500", "2000"), 
+                   labels = c("100", "500", "1000", "1500", "2000"))+
+  geom_text(aes(label=round(percents_master, 1)), position=position_dodge(width=0.9), vjust=-0.25, size = 3)
+#ggsave("distance_to_source_semi.jpg", semi, width = 7, height = 7)
+semi
+```
+
