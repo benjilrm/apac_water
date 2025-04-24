@@ -602,18 +602,20 @@ Clean up column names, create new columns with indicators on source type categor
 ```{r}
 final_dedup_formatted = final_dedup%>%
   mutate(
+    cons = 1,
     semi = ifelse(delete_semi == F, 1, 0),
     agg = ifelse(delete_agg == F, 1, 0),
     
-    private = case_when(
-      source_type_categorised %in% c("Private Tap", "Rainwater Harvesting") ~ 1, T ~ 0),
-    surface = case_when(source_type_categorised %in% c("Dam", "Surface Water") ~ 1, T ~ 0),
-    improved = case_when(
+    private = case_when(source_type_categorised %in% c("Private Tap", "Rainwater Harvesting") ~ 1, T ~ 0),
+    
+    all = 1,
+    nosurf = case_when(!source_type_categorised %in% c("Dam", "Surface Water") ~ 1, T ~ 0),
+    imp = case_when(
       grepl("Tap|Rainwater|Borehole", source_type_categorised) | source_type_categorised == "Protected Spring" ~ 1, T ~ 0),
-    improved_yearround = ifelse(improved == 1 & !grepl("Rainwater", source_type_categorised), 1, 0))%>%
+    impyearround = ifelse(imp == 1 & !grepl("Rainwater", source_type_categorised), 1, 0))%>%
   
   rename(town_centre = town)%>%
-  select(id, dwd, source_name, year, source_type_categorised, private, surface, improved, improved_yearround, lat, long, village, dataset, town_centre, semi, agg)%>%
+  select(id, dwd, source_name, year, source_type_categorised, private, all, nosurf, imp, impyearround, lat, long, village, dataset, town_centre, cons, semi, agg)%>%
   st_filter(., st_buffer(apac_kwania, 500), .pred = !st_intersects)
 ```
 
