@@ -48,6 +48,8 @@ households = st_transform(st_read("Raw data/Households/households_raw.gpkg"), cr
   st_join(., town_centres)%>%
   mutate(hh_id = row_number())%>%
   select(hh_id, town)
+
+nrow(households%>%filter(is.na(town)))/nrow(households)*100
 ```
 
 ## Water bodies
@@ -134,6 +136,8 @@ public_agg_imp = public_sources%>%filter(delete_agg == F & improved == 1)
 public_cons_imp = public_sources%>%filter(improved == 1)
 
 public_sources_dfs = list(public_semi_all, public_semi_nosurf, public_semi_imp, public_agg_all, public_agg_nosurf, public_agg_imp, public_cons_all, public_cons_nosurf, public_cons_imp)
+
+
 ```
 
 ## Households, Schools, and Healthcare
