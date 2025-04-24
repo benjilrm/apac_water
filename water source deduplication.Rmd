@@ -588,35 +588,42 @@ tm_shape(multisource_clusters%>%filter(cluster %in% multisource_clusters$cluster
 ```
 
 
-# Final stats
+# Final stats and exports
+
+Let's count the number of sources in each dataset
 ```{r}
-nrow(final_dedup) 
+paste("Conservative:", nrow(final_dedup))
 
-nrow(final_dedup%>%filter(delete_semi == F)) 
+paste("Semi-Conservative:", nrow(final_dedup%>%filter(delete_semi == F)))
 
-nrow(final_dedup%>%filter(delete_agg == F))
+paste("Aggressive:", nrow(final_dedup%>%filter(delete_agg == F)))
 ```
-
+Clean up column names, create new columns with indicators on source type categories we'll use for analysis, and final filter for only points within 500m radius of Apac/Kwania boundaries
 ```{r}
 final_dedup_formatted = final_dedup%>%
   mutate(
+    semi = ifelse(delete_semi == F, 1, 0),
+    agg = ifelse(delete_agg == F, 1, 0),
+    
     private = case_when(
-      source_type_categorised %in% c("Private Tap", "Rainwater Harvesting") ~ 1,
-      T ~ 0),
+      source_type_categorised %in% c("Private Tap", "Rainwater Harvesting") ~ 1, T ~ 0),
     surface = case_when(source_type_categorised %in% c("Dam", "Surface Water") ~ 1, T ~ 0),
     improved = case_when(
-      grepl("Tap|Rainwater|Borehole", source_type_categorised) | source_type_categorised == "Protected Spring" ~ 1,
-      T ~ 0))%>%
+      grepl("Tap|Rainwater|Borehole", source_type_categorised) | source_type_categorised == "Protected Spring" ~ 1, T ~ 0),
+    improved_yearround = ifelse(improved == 1 & !grepl("Rainwater", source_type_categorised), 1, 0))%>%
+  
   rename(town_centre = town)%>%
-  select(id, dwd, source_name, year, source_type_categorised, private, surface, improved, lat, long, village, dataset, town_centre, delete_semi, delete_agg)%>%
+  select(id, dwd, source_name, year, source_type_categorised, private, surface, improved, improved_yearround, lat, long, village, dataset, town_centre, semi, agg)%>%
   st_filter(., st_buffer(apac_kwania, 500), .pred = !st_intersects)
-
-st_write(final_dedup_formatted, "Processed data/water_source_dedups_apr21_2025.gpkg", delete_dsn = T)
-st_write(final_dedup_formatted, "Processed data/water_source_dedups_apr21_2025.shp", delete_dsn = T)
-write.csv(final_dedup_formatted, "Processed data/water_source_deduplicates_apr21_2025.csv", row.names = F)
 ```
 
+Export deduplicated dataset
+```{r}
+st_write(final_dedup_formatted, "Processed data/water_source_dedups_apr24_2025.gpkg", delete_dsn = T)
+#write.csv(final_dedup_formatted, "Processed data/water_source_deduplicates_apr21_2025.csv", row.names = F)
+```
 
+Create dataset of all sources (including duplicates for manual inspection in ArcGIS Online)
 ```{r}
 semi = final_dedup_formatted%>%filter(delete_semi == F)
 agg = final_dedup_formatted%>%filter(delete_agg == F)
