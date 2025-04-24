@@ -19,11 +19,11 @@ tmap_mode(mode = "view")
 priv_dist = 30
 dist_thresholds = c(100, 500, 1000, 1500, 2000)
 
-dedup_names <- c("semi" = "Semi-Conservative", "agg" = "Aggressive", "cons" = "Conservative")
-source_names <- c("all" = "Any Source (incl. surf. water)",
-                    "nosurf" = "Any Source (excl. surf. water)",
-                    "imp" = "Improved Source",
-                    "impyearround" = "Year-Round Improved Source")
+dedup_names <- c(semi = "Semi-Conservative", agg = "Aggressive", cons = "Conservative")
+source_names <- c(all = "Any Source (incl. surf. water)",
+                    nosurf = "Any Source (excl. surf. water)",
+                    imp = "Improved Source",
+                    impyearround = "Year-Round Improved Source")
 ```
 
 # Import Data
@@ -108,121 +108,10 @@ variations = c("semi_all", "semi_nosurf", "semi_imp", "agg_all", "agg_nosurf", "
 variations_schools_healthcare = c("semi_all", "semi_nosurf", "semi_imp", "semi_impyearround", "agg_all", "agg_nosurf", "agg_imp", "agg_impyearround", "cons_all", "cons_nosurf", "cons_imp", "cons_impyearround")
 ```
 
-We're also going to separate out private and public sources, since we only want households nearby the private sources to have access to them in our proximity analyses. 
-```{r}
-private_sources = water_sources%>%filter(private == 1)
-
-private_semi = private_sources%>%filter(semi == 1)
-private_agg = private_sources%>%filter(agg == 1)
-private_cons = private_sources
-
-private_sources_list = list(private_semi, private_agg, private_cons)
-```
-
-For both private and public sources, we put the sub-datasets into lists we can loop through for each type of analysis. 
-```{r}
-public_sources = water_sources%>%filter(private == 0)
-
-public_semi_all = public_sources%>%filter(semi == 1)
-public_agg_all = public_sources%>%filter(agg == 1)
-public_cons_all = public_sources
-
-public_semi_nosurf = public_sources%>%filter(semi == 1 & surface == 0)
-public_agg_nosurf = public_sources%>%filter(agg == 1 & surface == 0)
-public_cons_nosurf = public_sources%>%filter(surface == 0)
-
-public_semi_imp = public_sources%>%filter(semi == 1 & improved == 1)
-public_agg_imp = public_sources%>%filter(agg == 1 & improved == 1)
-public_cons_imp = public_sources%>%filter(improved == 1)
-
-public_sources_list = list(public_semi_all, public_semi_nosurf, public_semi_imp, public_agg_all, public_agg_nosurf, public_agg_imp, public_cons_all, public_cons_nosurf, public_cons_imp)
-
-public_sources_list_schools_healthcare = list(public_semi_all, public_semi_nosurf, public_semi_imp, public_semi_imp, public_agg_all, public_agg_nosurf, public_agg_imp, public_agg_imp, public_cons_all, public_cons_nosurf, public_cons_imp, public_cons_imp)
-```
-
-## Households, Schools, and Healthcare
-
-We generate a dataset of household coordinates, and we calculate the distance from each household to any surface water bodies (since this would count as 'all sources' in addition to any point water source data). 
-```{r}
-dist_to_lake_hh = households%>%
-  mutate(dist_to_lake = st_distance(geom, water_bodies)%>%apply(1, min),
-         hh_id = row_number())%>%
-  data.frame()%>%
-  select(hh_id, dist_to_lake)
-```
-
-```{r}
-school_coords = st_coordinates(schools)%>%data.frame()%>%
-  mutate(school_id = row_number())
-```
-
-```{r}
-healthcare_coords = st_coordinates(healthcare)%>%data.frame()%>%
-  mutate(healthcare_id = row_number())
-
-dist_to_lake_healthcare = healthcare%>%
-  mutate(dist_to_lake = st_distance(geometry, water_bodies)%>%apply(1, min),
-         healthcare_id = row_number())%>%
-  data.frame()%>%
-  select(healthcare_id, dist_to_lake)
-```
-
-## Buffer Distances
-
-Create a list of buffers at 100m intervals that we will use to find the # of sources within those distances for each household. Also a separate buffer for private sources.
-```{r}
-buffer30 = st_buffer(households, dist = priv_dist)
-
-buffer100 = st_buffer(households, dist = 100)
-buffer200 = st_buffer(households, dist = 200)
-buffer300 = st_buffer(households, dist = 300)
-buffer400 = st_buffer(households, dist = 400)
-buffer500 = st_buffer(households, dist = 500)
-buffer600 = st_buffer(households, dist = 600)
-buffer700 = st_buffer(households, dist = 700)
-buffer800 = st_buffer(households, dist = 800)
-buffer900 = st_buffer(households, dist = 900)
-buffer1000 = st_buffer(households, dist = 1000)
-buffer_list = list(buffer100, buffer200, buffer300, buffer400, buffer500, buffer600, buffer700, buffer800, buffer900, buffer1000)
-```
-
-Same for schools
-```{r}
-school_buffer30 = st_buffer(schools, dist = priv_dist)
-
-school_buffer100 = st_buffer(schools, dist = 100)
-school_buffer200 = st_buffer(schools, dist = 200)
-school_buffer300 = st_buffer(schools, dist = 300)
-school_buffer400 = st_buffer(schools, dist = 400)
-school_buffer500 = st_buffer(schools, dist = 500)
-school_buffer600 = st_buffer(schools, dist = 600)
-school_buffer700 = st_buffer(schools, dist = 700)
-school_buffer800 = st_buffer(schools, dist = 800)
-school_buffer900 = st_buffer(schools, dist = 900)
-school_buffer1000 = st_buffer(schools, dist = 1000)
-school_buffer_list = list(school_buffer100, school_buffer200, school_buffer300, school_buffer400, school_buffer500, school_buffer600, school_buffer700, school_buffer800, school_buffer900, school_buffer1000)
-```
-
-Same for healtchare
-```{r}
-healthcare_buffer30 = st_buffer(healthcare, dist = priv_dist)
-
-healthcare_buffer100 = st_buffer(healthcare, dist = 100)
-healthcare_buffer200 = st_buffer(healthcare, dist = 200)
-healthcare_buffer300 = st_buffer(healthcare, dist = 300)
-healthcare_buffer400 = st_buffer(healthcare, dist = 400)
-healthcare_buffer500 = st_buffer(healthcare, dist = 500)
-healthcare_buffer600 = st_buffer(healthcare, dist = 600)
-healthcare_buffer700 = st_buffer(healthcare, dist = 700)
-healthcare_buffer800 = st_buffer(healthcare, dist = 800)
-healthcare_buffer900 = st_buffer(healthcare, dist = 900)
-healthcare_buffer1000 = st_buffer(healthcare, dist = 1000)
-healthcare_buffer_list = list(healthcare_buffer100, healthcare_buffer200, healthcare_buffer300, healthcare_buffer400, healthcare_buffer500, healthcare_buffer600, healthcare_buffer700, healthcare_buffer800, healthcare_buffer900, healthcare_buffer1000)
-```
-
 
 # Distance Calculations
 
+## Master functions
 We create a function to calculate the distance from each point (household, school, healthcare facility, etc.) to the nearest water source, under different variations of deduplication and source types. 
 
 We record the distance from each household to the nearest 1) private source (only within the specified radius of 30m), 2) public source, and 3) in the analyses involving all sources (including surface water), to Lake Kwania. We then record the smallest distance 
@@ -254,7 +143,7 @@ calculate_access_distances <- function(
 
     # Filter public water sources using dummy columns
     pub_water_coords = st_coordinates(water_sources%>%filter(.data[[dedup_flag]] == 1 & .data[[source_flag]] == 1 & private == 0)) %>% data.frame()
-    private_water_coods = st_coordinates(water_sources%>%filter(.data[[dedup_flag]] == 1 & .data[[source_flag]] == 1 & private == 1)) %>% data.frame()
+    private_water_coords = st_coordinates(water_sources%>%filter(.data[[dedup_flag]] == 1 & .data[[source_flag]] == 1 & private == 1)) %>% data.frame()
 
     # Compute distances
     priv_dists <- data.frame(get.knnx(private_water_coords, facility_coords %>% select(-id), k = 1)) %>%
@@ -346,11 +235,10 @@ result <- calculate_access_distances(
   facility = households,
   variations = variations)
 
-#schools = result[1]%>%data.frame()
+households = result[1]
 household_dists = result[2]%>%data.frame()
 
 plot_by_dedup(household_dists, "Households")
-
 ```
 
 
@@ -362,10 +250,10 @@ result <- calculate_access_distances(
   facility = schools,
   variations = variations_schools_healthcare)
 
-schools = result[1]%>%data.frame()
-school_dists = result[2]
+schools = result[1]
+school_dists = result[2]%>%data.frame()
 
-school_dists
+plot_by_dedup(school_dists, "Schools")
 ```
 
 
@@ -380,181 +268,119 @@ result <- calculate_access_distances(
 healthcare = result[1]
 healthcare_dists = result[2]%>%data.frame()
 
-healthcare_dists
-```
-
-```{r}
-# Generate plots
-plot_by_dedup("Healthcare Facilities", healthcare_dists)
-cons <- plot_by_dedup("Healthcare Facilities", healthcare_dists, "Conservative")
-semi <- plot_by_dedup("Healthcare Facilities", healthcare_dists, "Semi-Conservative")
-
-# Display them
-agg
-cons
-semi
-
-# Optionally save:
-# ggsave("distance_to_source_agg.jpg", agg, width = 7, height = 7)
-# ggsave("distance_to_source_cons.jpg", cons, width = 7, height = 7)
-# ggsave("distance_to_source_semi.jpg", semi, width = 7, height = 7)
+plot_by_dedup(healthcare_dists, "Healthcare Facilities")
 ```
 
 # # of sources within radius
 
-## Households
+## Master function
 ```{r}
-means_master = c()
+buffer_dist_list = seq(100, 1000, by = 100)
 
-for (i in c(1:length(public_sources_list))){
-  print(i)
+calculate_num_sources <- function(
+  water_sources,
+  facility,
+  variations) 
+
+  {buffer_list <- setNames(
+    lapply(buffer_dist_list, function(d) st_buffer(facility, dist = d)),
+    as.character(buffer_dist_list))
+  priv_buffer <- st_buffer(facility, dist = priv_dist)
   
-  pub_water = public_sources_list[[i]]
-
-  if (i < 4){private_water = private_sources_list[[1]]}
-  else if (i < 7){private_water = private_sources_list[[2]]}
-  else {private_water = private_sources_list[[3]]}
+  # placeholder for summary rows
+  summary_rows <- list()
+  
+  # — loop over each variation (e.g. "semi_all", "agg_imp", etc.) —
+  for (variation in variations) {
+    parts       <- strsplit(variation, "_")[[1]]
+    dedup_flag  <- parts[1]    # "semi", "agg", "cons"
+    source_flag <- parts[2]    # "all", "nosurf", "imp", "impyearround"
     
-  priv_counts = data.frame(buffer30%>%mutate(priv_count = lengths(st_intersects(., private_water))))%>%select(hh_id, priv_count)
+    ws_pub <- water_sources %>%filter(.data[[dedup_flag]] == 1, .data[[source_flag]] == 1, private == 0)
+    ws_priv <- water_sources %>%filter(.data[[dedup_flag]] == 1, .data[[source_flag]] == 1, private == 1)
+    
+    # count private once per facility
+    priv_counts <- lengths(st_intersects(priv_buffer, ws_priv))
+    
+    # — now loop over each buffer distance —
+    for (dist in buffer_dist_list) {
+      pub_counts   <- lengths(st_intersects(buffer_list[[as.character(dist)]], ws_pub))
+      total_counts <- pub_counts + priv_counts
       
-  for (j in 1:length(buffer_list)){
-    pub_counts = buffer_list[[j]]%>%mutate(pub_count = lengths(st_intersects(., pub_water)))%>%select(hh_id, pub_count)
-    total_counts = left_join(pub_counts, priv_counts, by = "hh_id")%>%
-      mutate(total_count = pub_count + priv_count)
-    
-    households[[paste0("num_sources_", variations[i])]] <- total_counts$total_count
-    
-    means_master = append(means_master, mean(total_counts$total_count))}}
-
-dedup = rep(c("Semi-Conservative", "Aggressive", "Conservative"), each = 30)
-source_type = rep(rep(c("Any Source (incl. surf. water)", "Any Source (excl. surf. water)", "Improved Source"), each = 10), 3)
-distance = rep(c("100", "200", "300", "400", "500", "600", "700", "800", "900", "1000"), 9)
-
-master = data.frame(dedup, source_type, distance, means_master)
-
-master$source_type = factor(master$source_type, levels = c("Any Source (incl. surf. water)", "Any Source (excl. surf. water)", "Improved Source"))
+      # add a new column to facility sf
+      facility[[paste0("num_sources_", variation, "_", dist)]] <- total_counts
+      
+      # collect summary info
+      summary_rows[[paste(variation, dist, sep = "_")]] <- data.frame(
+        variation    = variation,
+        distance     = dist,
+        mean_sources = mean(total_counts, na.rm = TRUE))}}
+  
+  # bind summary rows and split variation into dedup / source_type
+  summary_df <- do.call(rbind, summary_rows) %>%
+    separate(variation, into = c("dedup", "source_type"), sep = "_")
+  
+  return(list(facility, summary_df))}
 ```
 
 ```{r}
-master$source_type = factor(master$source_type, levels = c("Any Source (incl. surf. water)", "Any Source (excl. surf. water)", "Improved Source"))
-master$dedup = factor(master$dedup, levels = c("Conservative", "Semi-Conservative", "Aggressive"))
+plot_summary_line <- function(df, label) {
 
-plot = ggplot(master, aes(as.numeric(distance), means_master, colour = source_type))+
-  facet_wrap(~dedup)+
-  geom_line(size = 1)+
-  geom_point(size = 2)+
-  theme_bw(base_size=14)+
-  scale_fill_manual(values=c("coral", "skyblue3", "green3"))+
-  labs(y="Mean Number of Sources \n Within Distance", x="Distance from Household (m)", colour="Water Source Type")+
-  theme(legend.position="bottom", legend.box = "vertical")+
-  guides(colour=guide_legend(nrow=3,byrow=TRUE))
-plot
-#ggsave("# of sources within radii (overall).jpg", width = 10, height = 7)
+  # Build and print the plot
+  ggplot(df, aes(x = distance, y = mean_sources, colour = source_type)) +
+    facet_wrap(~dedup, labeller = as_labeller(dedup_names))+
+    geom_line(size = 1) +
+    geom_point(size = 2) +
+    scale_colour_manual(values = c("coral", "skyblue3", "green3", "#C8A2C8"), labels = source_names) +
+    theme_bw(base_size = 14) +
+    labs(
+      x      = paste("Distance from", label, "(m)"),
+      y      = "Mean Number of Sources \n Within Distance",
+      colour = "Water Source Type") +
+    theme(legend.position = "bottom", legend.box = "vertical") +
+    guides(colour = guide_legend(nrow = 3, byrow = TRUE))}
+```
+
+
+## Households
+```{r}
+result <- calculate_num_sources(
+  water_sources = water_sources,
+  facility = households,
+  variations = variations)
+
+#schools = result[1]
+household_sources = result[2]%>%data.frame()
+
+plot_summary_line(household_sources, "Households")
 ```
 
 ## Schools
 
 ```{r}
-means_master = c()
+result <- calculate_num_sources(
+  water_sources = water_sources,
+  facility = schools,
+  variations = variations_schools_healthcare)
 
-for (i in c(1:length(public_sources_list_schools_healthcare))){
+#schools = result[1]
+school_sources = result[2]%>%data.frame()
 
-  pub_water = public_sources_list[[i]]
-
-  if (i < 5){private_water = private_sources_list[[1]]}
-  else if (i < 8){private_water = private_sources_list[[2]]}
-  else {private_water = private_sources_list[[3]]}
-  
-  if (grepl("yearround", variations_schools_healthcare[i])){private_water = private_water%>%filter(improved_yearround == 1)}
-    
-  priv_counts = data.frame(school_buffer30%>%mutate(priv_count = lengths(st_intersects(., private_water))))%>%select(school_id, priv_count)
-      
-  for (j in 1:length(school_buffer_list)){
-    pub_counts = school_buffer_list[[j]]%>%mutate(pub_count = lengths(st_intersects(., pub_water)))%>%select(school_id, pub_count)
-    total_counts = left_join(pub_counts, priv_counts, by = "school_id")%>%
-      mutate(total_count = pub_count + priv_count)
-    
-    schools[[paste0("num_sources_", variations[i])]] <- total_counts$total_count
-    
-    means_master = append(means_master, mean(total_counts$total_count))}}
-
-dedup = rep(c("Semi-Conservative", "Aggressive", "Conservative"), each = 30)
-source_type = rep(rep(c("Any Source (incl. surf. water)", "Any Source (excl. surf. water)", "Improved Source"), each = 10), 3)
-distance = rep(c("100", "200", "300", "400", "500", "600", "700", "800", "900", "1000"), 9)
-
-master = data.frame(dedup, source_type, distance, means_master)
-
-master$source_type = factor(master$source_type, levels = c("Any Source (incl. surf. water)", "Any Source (excl. surf. water)", "Improved Source"))
-```
-
-```{r}
-master$source_type = factor(master$source_type, levels = c("Any Source (incl. surf. water)", "Any Source (excl. surf. water)", "Improved Source"))
-master$dedup = factor(master$dedup, levels = c("Conservative", "Semi-Conservative", "Aggressive"))
-
-plot = ggplot(master, aes(as.numeric(distance), means_master, colour = source_type))+
-  facet_wrap(~dedup)+
-  geom_line(size = 1)+
-  geom_point(size = 2)+
-  theme_bw(base_size=14)+
-  scale_fill_manual(values=c("coral", "skyblue3", "green3"))+
-  labs(y="Mean Number of Sources \n Within Distance", x="Distance from School (m)", colour="Water Source Type")+
-  theme(legend.position="bottom", legend.box = "vertical")+
-  guides(colour=guide_legend(nrow=3,byrow=TRUE))
-plot
-#ggsave("# of sources within radii (overall).jpg", width = 10, height = 7)
+plot_summary_line(school_dists, "Schools")
 ```
 
 
 ## Healthcare
 
 ```{r}
-means_master = c()
+result <- calculate_num_sources(
+  water_sources = water_sources,
+  facility = healthcare,
+  variations = variations_schools_healthcare)
 
-for (i in c(1:length(public_sources_list_schools_healthcare))){
-  
-  pub_water = public_sources_list[[i]]
+#schools = result[1]
+healthcare_sources = result[2]%>%data.frame()
 
-  if (i <= 4){private_water = private_sources_list[[1]]}
-  else if (i <= 8){private_water = private_sources_list[[2]]}
-  else {private_water = private_sources_list[[3]]}
- 
-  if (grepl("yearround", variations_schools_healthcare[i])){private_water = private_water%>%filter(improved_yearround == 1)}
-     
-  priv_counts = data.frame(healthcare_buffer30%>%mutate(priv_count = lengths(st_intersects(., private_water))))%>%select(healthcare_id, priv_count)
-      
-  for (j in 1:length(healthcare_buffer_list)){
-    pub_counts = healthcare_buffer_list[[j]]%>%mutate(pub_count = lengths(st_intersects(., pub_water)))%>%select(healthcare_id, pub_count)
-    total_counts = left_join(pub_counts, priv_counts, by = "healthcare_id")%>%
-      mutate(total_count = pub_count + priv_count)
-    
-    healthcare[[paste0("num_sources_", variations[i])]] <- total_counts$total_count
-    
-    means_master = append(means_master, mean(total_counts$total_count))}}
-
-dedup = rep(c("Semi-Conservative", "Aggressive", "Conservative"), each = 30)
-source_type = rep(rep(c("Any Source (incl. surf. water)", "Any Source (excl. surf. water)", "Improved Source"), each = 10), 3)
-distance = rep(c("100", "200", "300", "400", "500", "600", "700", "800", "900", "1000"), 9)
-
-master = data.frame(dedup, source_type, distance, means_master)
-
-master$source_type = factor(master$source_type, levels = c("Any Source (incl. surf. water)", "Any Source (excl. surf. water)", "Improved Source"))
+plot_summary_line(healthcare_sources, "Healthcare Facilities")
 ```
-
-```{r}
-master$source_type = factor(master$source_type, levels = c("Any Source (incl. surf. water)", "Any Source (excl. surf. water)", "Improved Source"))
-master$dedup = factor(master$dedup, levels = c("Conservative", "Semi-Conservative", "Aggressive"))
-
-plot = ggplot(master, aes(as.numeric(distance), means_master, colour = source_type))+
-  facet_wrap(~dedup)+
-  geom_line(size = 1)+
-  geom_point(size = 2)+
-  theme_bw(base_size=14)+
-  scale_fill_manual(values=c("coral", "skyblue3", "green3"))+
-  labs(y="Mean Number of Sources \n Within Distance", x="Distance from Healthcare Facility (m)", colour="Water Source Type")+
-  theme(legend.position="bottom", legend.box = "vertical")+
-  guides(colour=guide_legend(nrow=3,byrow=TRUE))
-plot
-#ggsave("# of sources within radii (overall).jpg", width = 10, height = 7)
-```
-
 
