@@ -502,15 +502,14 @@ Here, we again calculate the % of households within 1000m of an improved source,
 
 Let's create a function to run this simulation for us
 ```{r}
-
-sensitivity_analysis <- function(water_source_sf, facility, functionalities, distance) {
+sensitivity_analysis <- function(water_sources_sf, facility, functionalities, distance) {
   plan(multisession)
   
   facility_coords <- st_coordinates(facility)
   n_facilities <- nrow(facility_coords)
   
-  water_coords_all <- st_coordinates(water_source_sf)
-  private_flags <- water_source_sf$private
+  water_coords_all <- st_coordinates(water_sources_sf)
+  private_flags <- water_source_montecarlo$private
 
   results <- data.frame(functionality = functionalities, mean_perc = NA_real_, perc2_5 = NA_real_, perc97_5 = NA_real_)
 
@@ -526,8 +525,10 @@ sensitivity_analysis <- function(water_source_sf, facility, functionalities, dis
       pub_coords <- sampled_coords[sampled_private == 0, , drop = FALSE]
       priv_coords <- sampled_coords[sampled_private == 1, , drop = FALSE]
 
-      priv_dists <- if (nrow(priv_coords) > 0) get.knnx(priv_coords, facility_coords, k = 1)$nn.dist[, 1] else rep(Inf, n_facilities)
-      pub_dists  <- if (nrow(pub_coords) > 0) get.knnx(pub_coords, facility_coords, k = 1)$nn.dist[, 1] else rep(Inf, n_facilities)
+      priv_dists  <- get.knnx(priv_coords, facility_coords, k = 1)$nn.dist[, 1]
+      priv_dists[priv_dists > 30] <- Inf
+      
+      pub_dists  <- get.knnx(pub_coords, facility_coords, k = 1)$nn.dist[, 1]
 
       min_dists <- pmin(priv_dists, pub_dists)
       mean(min_dists < distance) * 100}, .options = furrr_options(seed = TRUE)) 
@@ -539,12 +540,17 @@ sensitivity_analysis <- function(water_source_sf, facility, functionalities, dis
   return(results)}
 ```
 
+
+
 And we can now run the function for rural households, considering improved sources in the semi-conservative duplication scenario.
 ```{r}
-semi_imp = sensitivity_analysis(water_sources%>%filter(semi == 1 & imp == 1), 
+semi_imp = sensitivity_analysis(
+                      water_sources%>%filter(semi == 1 & imp == 1),
                      households%>%filter(is.na(town)),
                      seq(0.5, 1, by = 0.1),
                      1000)
+
+semi_imp
 ```
 
 Generate plot of results
