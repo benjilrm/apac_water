@@ -8,13 +8,14 @@ library(sf)
 library(tmap)
 library(readxl)
 library(FNN)
+library(furrr)
 ```
 
 Set default projection, tmap settings, and standard distance for deduplication (in metres)
 ```{r}
 crs = 32636
 
-tmap_mode(mode = "view")
+tmap_mode(mode = "plot")
 
 priv_dist = 30
 dist_thresholds = c(100, 500, 1000, 1500, 2000)
@@ -58,6 +59,8 @@ households = st_transform(st_read("Raw data/Households/households_raw.gpkg"), cr
   rename(geometry = geom)
 
 paste(round(nrow(households%>%filter(is.na(town)))/nrow(households)*100, 2), "% of households outside of town centers")
+
+paste(nrow(households%>%filter(is.na(town))), "households outside of town centers")
 ```
 
 ## Water bodies
@@ -93,6 +96,12 @@ healthcare = st_transform(st_read("Raw data/Healthcare Facilities/sub-saharan_he
 ## Deduplicated water sources
 ```{r}
 water_sources = st_transform(st_read("Processed data/water_source_dedups_apr24_2025.gpkg"))
+
+water_sources%>%data.frame()
+
+paste("Semi-Conservative:", nrow(water_sources%>%filter(semi == 1)))
+paste("Semi-Conservative, excl. sw:", nrow(water_sources%>%filter(semi == 1 & nosurf == 1)))
+paste("Semi-Conservative, improved:", nrow(water_sources%>%filter(semi == 1 & imp == 1)))
 ```
 
 
@@ -187,24 +196,29 @@ Another function to plot distance results
 ```{r}
 plot_by_dedup <- function(df, facility_label) {
   
-  # make sure your factor levels are set once
-  df <- df %>%mutate(
-      source_type = factor(source_type, levels = c(
-          "Any Source (incl. surf. water)",
-          "Any Source (excl. surf. water)",
-          "Improved Source",
-          "Year-Round Improved Source")))
+  # Set factor levels
+  df <- df %>%
+    mutate(source_type = factor(source_type, levels = c(
+      "Any Source (incl. surf. water)",
+      "Any Source (excl. surf. water)",
+      "Improved Source",
+      "Year-Round Improved Source"
+    )))
   
   dedup_levels <- unique(df$dedup)
+  plot_list <- list()  # Initialize empty list
   
   for (lev in dedup_levels) {
     p <- df %>%
-      filter(dedup == lev)%>%
+      filter(dedup == lev) %>%
       ggplot(aes(distance, percents_master, fill = source_type)) +
       geom_col(colour = "black", position = position_dodge(), alpha = 0.8) +
       theme_bw(base_size = 14) +
       scale_fill_manual(values = c("coral", "skyblue3", "green3", "#C8A2C8")) +
-      labs(title = paste(facility_label, "–", lev), x     = "Distance to Water Source (m)", y = paste(facility_label, "Within Distance (%)"), fill  = "Water Source Type") +
+      labs(title = paste(facility_label, "–", lev),
+           x = "Distance to Water Source (m)",
+           y = paste(facility_label, "Within Distance (%)"),
+           fill = "Water Source Type") +
       theme(
         axis.text.x = element_text(hjust = 0.5),
         plot.title = element_text(hjust = 0.5, size = 14),
@@ -215,60 +229,104 @@ plot_by_dedup <- function(df, facility_label) {
         legend.box = "vertical") +
       guides(fill = guide_legend(nrow = 3, byrow = TRUE)) +
       scale_x_discrete(
-        limits = c("100","500","1000","1500","2000"),
-        labels = c("100","500","1000","1500","2000")) +
+        limits = c("100", "500", "1000", "1500", "2000"),
+        labels = c("100", "500", "1000", "1500", "2000")) +
       geom_text(
         aes(label = round(percents_master, 1)),
         position = position_dodge(width = 0.9),
-        vjust    = -0.25,
-        size     = 3)
+        vjust = -0.25,
+        size = 3)
     
-    print(p)}}
+    plot_list[[lev]] <- p}  # Save plot to list, using dedup level as name
+  return(plot_list)}
+
 ```
 
 
 ## Households
 
 ```{r}
-result <- calculate_access_distances(
+rural_hh_dist <- calculate_access_distances(
+  water_sources = water_sources,
+  facility = households%>%filter(is.na(town)),
+  variations = variations)
+
+rural_hh_dist_sf = rural_hh_dist[1]
+
+plots <- plot_by_dedup(rural_hh_dist[2]%>%data.frame(), "Households")
+
+# To view a specific plot:
+plot = plots[["Semi-Conservative"]]+labs(title = "")
+
+ggsave("Figures/hh_dist_semi_rural.png", plot, dpi = 600)
+```
+
+
+```{r}
+all_hh_dist <- calculate_access_distances(
   water_sources = water_sources,
   facility = households,
   variations = variations)
 
-households = result[1]
-household_dists = result[2]%>%data.frame()
+colors <- c("green3", "yellowgreen", "yellow", "darkorange", "red")
 
-plot_by_dedup(household_dists, "Households")
+hh_dist_map = tm_shape(all_hh_dist[[1]])+
+  tm_dots(col = "dist_semi_imp",
+          palette = colors,
+          breaks = c(0, 100, 500, 1000, 2000, Inf),
+          size = 0.09, 
+          legend.show = F)+
+  tm_layout(frame = F, legend.width = 2, legend.height = 1.5, legend.text.size = 1, legend.title.size = 1.4)+
+  tm_compass()+
+  tm_scale_bar()+
+  tm_add_legend(type = "fill", col = "white", labels = c("Town Centers"))+
+  tm_add_legend(type = "fill", 
+                  col = colors,
+                  labels = c("<100", "100–500", "500–1000", "1000–2000", "2000+"),
+                  title = "Distance (m)")+
+  tm_shape(town_centres)+
+  tm_borders(col = "black")
+
+tmap_save(hh_dist_map, filename = "Figures/hh_dist_semi_imp.png", dpi = 600)
 ```
 
 
 ## Schools
 
 ```{r}
-result <- calculate_access_distances(
+school_dists <- calculate_access_distances(
   water_sources = water_sources,
   facility = schools,
   variations = variations_schools_healthcare)
+```
 
-schools = result[1]
-school_dists = result[2]%>%data.frame()
 
-plot_by_dedup(school_dists, "Schools")
+```{r}
+plots <- plot_by_dedup(school_dists[2]%>%data.frame(), "Schools")
+
+# To view a specific plot:
+plot = plots[["Semi-Conservative"]]+labs(title = "")
+
+ggsave("Figures/school_dist_semi.png", plot, dpi = 600)
 ```
 
 
 ## Healthcare facilities
 
 ```{r}
-result <- calculate_access_distances(
+healthcare_dists <- calculate_access_distances(
   water_sources = water_sources,
   facility = healthcare,
   variations = variations_schools_healthcare)
+```
 
-healthcare = result[1]
-healthcare_dists = result[2]%>%data.frame()
+```{r}
+plots <- plot_by_dedup(healthcare_dists[2]%>%data.frame(), "Healthcare Facilities")
 
-plot_by_dedup(healthcare_dists, "Healthcare Facilities")
+# To view a specific plot:
+plot = plots[["Semi-Conservative"]]+labs(title = "")
+
+ggsave("Figures/healthcare_dist_semi.png", plot, dpi = 600)
 ```
 
 # # of sources within radius
@@ -344,16 +402,70 @@ plot_summary_line <- function(df, label) {
 
 ## Households
 ```{r}
-result <- calculate_num_sources(
+rural_hh_num_sources <- calculate_num_sources(
+  water_sources = water_sources,
+  facility = households%>%filter(is.na(town)),
+  variations = variations)
+```
+
+
+```{r}
+plot_summary_line(rural_hh_num_sources[2], "Households")
+
+plot = rural_hh_num_sources[2][[1]]%>%
+  filter(dedup == "semi" & source_type == "imp")%>%
+  ggplot(aes(distance, mean_sources))+
+  geom_point(size = 2, col = "coral4")+
+  geom_line(col = "coral4")+
+  theme_bw(17)+
+  labs(x = "Distance from Household (m)", y = "Mean Number of Sources Within Distance")
+
+ggsave("Figures/num_sources_hh_rural_semi.png", plot, dpi = 600, width = 10, height = 7)
+```
+
+```{r}
+colors <- c("red", "darkorange", "yellow", "yellowgreen", "green4")
+
+all_hh_num_sources = calculate_num_sources(
   water_sources = water_sources,
   facility = households,
   variations = variations)
 
-#schools = result[1]
-household_sources = result[2]%>%data.frame()
+hh_num_sources_map = tm_shape(all_hh_num_sources[[1]])+
+  tm_dots(col = "num_sources_semi_imp_1000",
+          palette = colors,
+          breaks = c(0, 1, 2, 3, 5, Inf),
+          size = 0.09, 
+          legend.show = F)+
+  tm_layout(frame = F, legend.width = 2, legend.height = 1.5, legend.text.size = 1, legend.title.size = 1.4)+
+  tm_compass()+
+  tm_scale_bar()+
+  tm_add_legend(type = "fill", col = "white", labels = c("Town Centers"))+
+  tm_add_legend(type = "fill", 
+                  col = colors,
+                  labels = c("0", "1", "2", "3-4", "5+"),
+                  title = "Number of Sources within 1km")+
+  tm_shape(town_centres)+
+  tm_borders(col = "black", lwd = 2)
 
-plot_summary_line(household_sources, "Households")
+hh_num_sources_map
+
+tmap_save(hh_num_sources_map, filename = "Figures/hh_num_sources_semi_imp.png", dpi = 600)
 ```
+
+Summary stats
+```{r}
+rural_hh_num_sources[2][[1]]
+
+rural_hh_num_sources[1][[1]]%>%data.frame()%>%
+  select(num_sources_semi_imp_1000)%>%
+  mutate(two = ifelse(num_sources_semi_imp_1000 >= 2, 1, 0),
+         three = ifelse(num_sources_semi_imp_1000 >= 3, 1, 0))%>%
+  summarise(mean(two), mean(three))
+
+```
+
+
 
 ## Schools
 
@@ -382,5 +494,96 @@ result <- calculate_num_sources(
 healthcare_sources = result[2]%>%data.frame()
 
 plot_summary_line(healthcare_sources, "Healthcare Facilities")
+```
+
+
+# Sensitivity analysis
+Here, we again calculate the % of households within 1000m of an improved source, but using a monte-carlo simulation to consider non-functionality or missingness of water sources
+
+Let's create a function to run this simulation for us
+```{r}
+
+sensitivity_analysis <- function(water_source_sf, facility, functionalities, distance) {
+  plan(multisession)
+  
+  facility_coords <- st_coordinates(facility)
+  n_facilities <- nrow(facility_coords)
+  
+  water_coords_all <- st_coordinates(water_source_sf)
+  private_flags <- water_source_sf$private
+
+  results <- data.frame(functionality = functionalities, mean_perc = NA_real_, perc2_5 = NA_real_, perc97_5 = NA_real_)
+
+  for (i in seq_along(functionalities)) {
+    f <- functionalities[i]
+    reps <- ifelse(f == 1, 1, 10000)
+
+    percs <- future_map_dbl(1:reps, function(j) {
+      sampled_idx <- sample(nrow(water_coords_all), f * nrow(water_coords_all))
+      sampled_coords <- water_coords_all[sampled_idx, , drop = FALSE]
+      sampled_private <- private_flags[sampled_idx]
+
+      pub_coords <- sampled_coords[sampled_private == 0, , drop = FALSE]
+      priv_coords <- sampled_coords[sampled_private == 1, , drop = FALSE]
+
+      priv_dists <- if (nrow(priv_coords) > 0) get.knnx(priv_coords, facility_coords, k = 1)$nn.dist[, 1] else rep(Inf, n_facilities)
+      pub_dists  <- if (nrow(pub_coords) > 0) get.knnx(pub_coords, facility_coords, k = 1)$nn.dist[, 1] else rep(Inf, n_facilities)
+
+      min_dists <- pmin(priv_dists, pub_dists)
+      mean(min_dists < distance) * 100}, .options = furrr_options(seed = TRUE)) 
+
+    results$mean_perc[i] <- mean(percs)
+    results$perc2_5[i] <- quantile(percs, 0.025)
+    results$perc97_5[i] <- quantile(percs, 0.975)}
+
+  return(results)}
+```
+
+And we can now run the function for rural households, considering improved sources in the semi-conservative duplication scenario.
+```{r}
+semi_imp = sensitivity_analysis(water_sources%>%filter(semi == 1 & imp == 1), 
+                     households%>%filter(is.na(town)),
+                     seq(0.5, 1, by = 0.1),
+                     1000)
+```
+
+Generate plot of results
+```{r}
+plot = ggplot(semi_imp, aes(functionality, mean_perc))+
+  geom_point(col = "skyblue4")+
+  geom_errorbar(aes(ymin = perc2_5, ymax = perc97_5), width = 0.01, color = "skyblue4") +
+  geom_line(col = "skyblue4")+
+  theme_bw(20)+
+  labs(x = "% Sources Functional or Included in Dataset", y = "Mean % of Households Within 1000m of Source")
+
+plot
+ggsave("Figures/montecarlo_1000m.png", plot, width = 10, height = 7, dpi = 600)
+```
+
+
+
+# Relationships
+
+Investigating the relationship between household proximity to improved sources and # of sources within 1000m, both through a boxplot and regression
+
+```{r}
+boxplot = left_join(rural_hh_dist[1][[1]]%>%data.frame()%>%select(id, dist_semi_imp),
+          rural_hh_num_sources[1][[1]]%>%data.frame()%>%select(id, num_sources_semi_imp_1000),
+          by = "id")%>%
+  ggplot(aes(as.factor(num_sources_semi_imp_1000), dist_semi_imp))+
+  geom_boxplot()+
+  theme_bw(20)+
+  coord_flip()+
+  labs(y = "Distance to Nearest Improved Source (m)", x = "Num. Improved Sources within 1000m")
+  
+boxplot
+
+ggsave("Figures/boxplot.png", boxplot, width = 10, height = 7, dpi = 600)
+```
+
+```{r}
+summary(lm(data = left_join(all_hh_dist[1][[1]]%>%data.frame()%>%select(id, dist_semi_imp),
+          all_hh_num_sources[1][[1]]%>%data.frame()%>%select(id, num_sources_semi_imp_1000),
+          by = "id"), num_sources_semi_imp_1000 ~ dist_semi_imp))
 ```
 
