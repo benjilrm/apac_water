@@ -547,7 +547,7 @@ And we can now run the function for rural households, considering improved sourc
 semi_imp = sensitivity_analysis(
                       water_sources%>%filter(semi == 1 & imp == 1),
                      households%>%filter(is.na(town)),
-                     seq(0.5, 1, by = 0.1),
+                     c(0.5, 0.75, 0.9, 0.95, 1),
                      1000)
 
 semi_imp

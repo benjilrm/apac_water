@@ -587,17 +587,8 @@ tm_shape(multisource_clusters%>%filter(cluster %in% multisource_clusters$cluster
   tm_basemap("Esri.WorldImagery")
 ```
 
-
 # Final stats and exports
 
-Let's count the number of sources in each dataset
-```{r}
-paste("Conservative:", nrow(final_dedup))
-
-paste("Semi-Conservative:", nrow(final_dedup%>%filter(delete_semi == F)))
-
-paste("Aggressive:", nrow(final_dedup%>%filter(delete_agg == F)))
-```
 Clean up column names, create new columns with indicators on source type categories we'll use for analysis, and final filter for only points within 500m radius of Apac/Kwania boundaries
 ```{r}
 final_dedup_formatted = final_dedup%>%
@@ -617,6 +608,15 @@ final_dedup_formatted = final_dedup%>%
   rename(town_centre = town)%>%
   select(id, dwd, source_name, year, source_type_categorised, private, all, nosurf, imp, impyearround, lat, long, village, dataset, town_centre, cons, semi, agg)%>%
   st_filter(., st_buffer(apac_kwania, 500), .pred = !st_intersects)
+```
+
+Let's count the number of sources in each dataset
+```{r}
+paste("Conservative:", nrow(final_dedup_formatted))
+
+paste("Semi-Conservative:", nrow(final_dedup_formatted%>%filter(semi == 1)))
+
+paste("Aggressive:", nrow(final_dedup_formatted%>%filter(agg == 1)))
 ```
 
 Export deduplicated dataset
