@@ -34,6 +34,16 @@ source_names <- c(all = "Any Source (incl. surf. water)",
 apac_kwania = st_transform(st_read("Raw data/Apac Kwania/ApacKwania.shp"), crs)
 ```
 
+## Subcounties
+Obtained from [UNHCR](https://data.unhcr.org/en/documents/details/76498)
+```{r}
+subcounties = st_transform(st_read("Raw data/Subcounties/subcounties_2019.shp"), crs)%>%
+  filter(District %in% c("APAC", "KWANIA"))%>%
+  select(sname2019)%>%
+  rename(subcounty = 1)
+```
+
+
 
 ## Town Centres
 ```{r}
@@ -56,11 +66,14 @@ households = st_transform(st_read("Raw data/Households/households_raw.gpkg"), cr
   st_join(., town_centres)%>%
   mutate(id = row_number())%>%
   select(id, town)%>%
-  rename(geometry = geom)
+  rename(geometry = geom)%>%
+  st_join(., subcounties)
 
 paste(round(nrow(households%>%filter(is.na(town)))/nrow(households)*100, 2), "% of households outside of town centers")
 
 paste(nrow(households%>%filter(is.na(town))), "households outside of town centers")
+
+#st_write(households, "Processed data/Households/20260713_households_joined.gpkg")
 ```
 
 ## Water bodies
@@ -97,11 +110,10 @@ healthcare = st_transform(st_read("Raw data/Healthcare Facilities/sub-saharan_he
 ```{r}
 water_sources = st_transform(st_read("Processed data/water_source_dedups_apr24_2025.gpkg"))
 
-water_sources%>%data.frame()
-
 paste("Semi-Conservative:", nrow(water_sources%>%filter(semi == 1)))
 paste("Semi-Conservative, excl. sw:", nrow(water_sources%>%filter(semi == 1 & nosurf == 1)))
 paste("Semi-Conservative, improved:", nrow(water_sources%>%filter(semi == 1 & imp == 1)))
+paste("Semi-Conservative, improved year-round:", nrow(water_sources%>%filter(semi == 1 & impyearround == 1)))
 ```
 
 
@@ -248,7 +260,8 @@ plot_by_dedup <- function(df, facility_label) {
 ```{r}
 rural_hh_dist <- calculate_access_distances(
   water_sources = water_sources,
-  facility = households%>%filter(is.na(town)),
+  facility = households,
+  #%>%filter(!is.na(town)),
   variations = variations)
 
 rural_hh_dist_sf = rural_hh_dist[1]
@@ -258,7 +271,15 @@ plots <- plot_by_dedup(rural_hh_dist[2]%>%data.frame(), "Households")
 # To view a specific plot:
 plot = plots[["Semi-Conservative"]]+labs(title = "")
 
-ggsave("Figures/hh_dist_semi_rural.png", plot, dpi = 600)
+plot
+ggsave("Figures/hh_dist_semi_all.png", plot, dpi = 600)
+```
+```{r}
+rural_hh_dist_sf%>%
+  data.frame()%>%
+  mutate(access_1km = ifelse(dist_semi_imp <= 1000, 1, 0))%>%
+  group_by(subcounty)%>%
+  reframe(perc_access = mean(access_1km)*100)
 ```
 
 
@@ -268,6 +289,11 @@ all_hh_dist <- calculate_access_distances(
   facility = households,
   variations = variations)
 
+#st_write(all_hh_dist[[1]], "Processed data/20260710_all_hh_dist.shp")
+```
+
+
+```{r}
 colors <- c("green3", "yellowgreen", "yellow", "darkorange", "red")
 
 hh_dist_map = tm_shape(all_hh_dist[[1]])+
@@ -333,7 +359,8 @@ ggsave("Figures/healthcare_dist_semi.png", plot, dpi = 600)
 
 ## Master function
 ```{r}
-buffer_dist_list = seq(100, 1000, by = 100)
+buffer_dist_list = 1000
+  #seq(100, 1000, by = 100)
 
 calculate_num_sources <- function(
   water_sources,
@@ -404,9 +431,19 @@ plot_summary_line <- function(df, label) {
 ```{r}
 rural_hh_num_sources <- calculate_num_sources(
   water_sources = water_sources,
-  facility = households%>%filter(is.na(town)),
+  facility = households
+  #%>%filter(is.na(town))
+  ,
   variations = variations)
 ```
+
+```{r}
+rural_hh_num_sources[[1]]%>%
+  data.frame()
+
+st_write(rural_hh_num_sources[[1]]%>%select(num_sources_semi_imp_1000), "Processed data/Shapefiles/20260711_all_hh_num_sources_within1km.shp", delete_dsn = T)
+```
+
 
 
 ```{r}
@@ -509,7 +546,7 @@ sensitivity_analysis <- function(water_sources_sf, facility, functionalities, di
   n_facilities <- nrow(facility_coords)
   
   water_coords_all <- st_coordinates(water_sources_sf)
-  private_flags <- water_source_montecarlo$private
+  private_flags <- water_sources_sf$private
 
   results <- data.frame(functionality = functionalities, mean_perc = NA_real_, perc2_5 = NA_real_, perc97_5 = NA_real_)
 
@@ -547,7 +584,7 @@ And we can now run the function for rural households, considering improved sourc
 semi_imp = sensitivity_analysis(
                       water_sources%>%filter(semi == 1 & imp == 1),
                      households%>%filter(is.na(town)),
-                     c(0.5, 0.75, 0.9, 0.95, 1),
+                     c(0.5, 0.6, 0.7, 0.8, 0.9, 1),
                      1000)
 
 semi_imp
@@ -555,15 +592,19 @@ semi_imp
 
 Generate plot of results
 ```{r}
-plot = ggplot(semi_imp, aes(functionality, mean_perc))+
+plot = ggplot(semi_imp, aes(functionality*100, mean_perc))+
   geom_point(col = "skyblue4")+
   geom_errorbar(aes(ymin = perc2_5, ymax = perc97_5), width = 0.01, color = "skyblue4") +
   geom_line(col = "skyblue4")+
+  #scale_y_continuous(limits = c(50, 100))+
   theme_bw(20)+
-  labs(x = "% Sources Functional or Included in Dataset", y = "Mean % of Households Within 1000m of Source")
+  labs(x = "% Sources Functional or Included in Dataset", y = "Mean % of Households Within 1000m of Source")+
+  geom_line(
+    data = semi_imp %>% filter(functionality == min(functionality) | functionality == max(functionality)), 
+    linetype = "dotted")
 
 plot
-ggsave("Figures/montecarlo_1000m.png", plot, width = 10, height = 7, dpi = 600)
+ggsave("Figures/20260710_montecarlo_1000m.png", plot, width = 10, height = 7, dpi = 600)
 ```
 
 
