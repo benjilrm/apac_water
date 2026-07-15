@@ -43,9 +43,8 @@ subcounties = st_transform(st_read("Raw data/Subcounties/subcounties_2019.shp"),
   rename(subcounty = 1)
 ```
 
-
-
 ## Town Centres
+Manually traced from satellite imagery in ArcGIS Pro
 ```{r}
 aduku = st_transform(st_read("Raw data/Town Centres/aduku town centre/aduku_town_centre.shp"), crs)%>%
   mutate(town = "Aduku")%>%
@@ -70,7 +69,6 @@ households = st_transform(st_read("Raw data/Households/households_raw.gpkg"), cr
   st_join(., subcounties)
 
 paste(round(nrow(households%>%filter(is.na(town)))/nrow(households)*100, 2), "% of households outside of town centers")
-
 paste(nrow(households%>%filter(is.na(town))), "households outside of town centers")
 
 #st_write(households, "Processed data/Households/20260713_households_joined.gpkg")
@@ -109,12 +107,20 @@ healthcare = st_transform(st_read("Raw data/Healthcare Facilities/sub-saharan_he
 ## Deduplicated water sources
 ```{r}
 water_sources = st_transform(st_read("Processed data/water_source_dedups_apr24_2025.gpkg"))
+```
 
+Summary stats
+```{r}
 paste("Semi-Conservative:", nrow(water_sources%>%filter(semi == 1)))
 paste("Semi-Conservative, excl. sw:", nrow(water_sources%>%filter(semi == 1 & nosurf == 1)))
 paste("Semi-Conservative, improved:", nrow(water_sources%>%filter(semi == 1 & imp == 1)))
 paste("Semi-Conservative, improved year-round:", nrow(water_sources%>%filter(semi == 1 & impyearround == 1)))
+
+table(water_sources%>%
+        filter(semi == 1)%>%
+        pull(source_type_categorised), useNA = "always")
 ```
+
 
 
 
