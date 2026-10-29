@@ -107,6 +107,29 @@ healthcare = st_transform(st_read("Raw data/Healthcare Facilities/sub-saharan_he
 ## Deduplicated water sources
 ```{r}
 water_sources = st_transform(st_read("Processed data/water_source_dedups_apr24_2025.gpkg"))
+
+wpdx_sources = wdpx_dedup%>%
+  mutate(
+    cons = 1,
+    agg = ifelse(delete_agg == T, 0, 1),
+    semi = ifelse(delete_semi == T, 0, 1),
+    private = case_when(source_type_categorised %in% c("Private Tap", "Rainwater Harvesting") ~ 1, T ~ 0),
+    
+    all = 1,
+    nosurf = case_when(!source_type_categorised %in% c("Dam", "Surface Water") ~ 1, T ~ 0),
+    imp = case_when(
+      grepl("Tap|Rainwater|Borehole", source_type_categorised) | source_type_categorised == "Protected Spring" ~ 1, T ~ 0))%>%
+  st_as_sf(crs = crs)
+
+nearest_idx <- st_nearest_feature(water_sources%>%filter(!dataset %in% c("ministry", "lifeline")), wpdx_sources)
+water_sources%>%filter(!dataset %in% c("ministry", "lifeline"))%>%
+  mutate(
+    nearest_geometry = st_geometry(wpdx_sources)[nearest_idx],
+    nearest_dist = as.numeric(st_distance(geom, nearest_geometry, by_element = T)))%>%
+  data.frame()
+  filter(nearest_dist > 50 )
+  
+  413/1799
 ```
 
 Summary stats
@@ -265,9 +288,8 @@ plot_by_dedup <- function(df, facility_label) {
 
 ```{r}
 rural_hh_dist <- calculate_access_distances(
-  water_sources = water_sources,
-  facility = households,
-  #%>%filter(!is.na(town)),
+  water_sources = wpdx_sources,
+  facility = households%>%filter(is.na(town)),
   variations = variations)
 
 rural_hh_dist_sf = rural_hh_dist[1]
@@ -276,10 +298,14 @@ plots <- plot_by_dedup(rural_hh_dist[2]%>%data.frame(), "Households")
 
 # To view a specific plot:
 plot = plots[["Semi-Conservative"]]+labs(title = "")
-
 plot
-ggsave("Figures/hh_dist_semi_all.png", plot, dpi = 600)
+ggsave("Figures/20260723_hh_dist_semi_wdpx_sources.png", plot, dpi = 600)
+
+nrow(wpdx_sources%>%filter(semi == 1))
+nrow(wpdx_sources%>%filter(semi == 1 & nosurf == 1))
+nrow(wpdx_sources%>%filter(semi == 1 & imp == 1))
 ```
+
 ```{r}
 rural_hh_dist_sf%>%
   data.frame()%>%
@@ -287,7 +313,6 @@ rural_hh_dist_sf%>%
   group_by(subcounty)%>%
   reframe(perc_access = mean(access_1km)*100)
 ```
-
 
 ```{r}
 all_hh_dist <- calculate_access_distances(
@@ -538,6 +563,23 @@ healthcare_sources = result[2]%>%data.frame()
 
 plot_summary_line(healthcare_sources, "Healthcare Facilities")
 ```
+# Source congestion
+```{r}
+tmap_mode(mode = "view")
+water_sources%>%
+  
+  filter(private == 0 & semi == 1 & imp == 1)%>%
+  st_buffer(1000)%>%
+  mutate(n_households_1km = lengths(st_intersects(., households)),
+         n_sources_1km = lengths(st_intersects(., water_sources)),
+         source_congestion = n_households_1km/n_sources_1km)%>%
+  #data.frame()
+  tm_shape(.)+
+  tm_dots(fill = "source_congestion", fill.scale = tm_scale_continuous_log1p(
+    values = "-brewer.RdBu"))
+  tm_dots(fill = "source_congestion", 
+          fill.scale = tm_scale_continuous(values = c("darkblue", "red2")))
+```
 
 
 # Sensitivity analysis
@@ -638,5 +680,72 @@ ggsave("Figures/boxplot.png", boxplot, width = 10, height = 7, dpi = 600)
 summary(lm(data = left_join(all_hh_dist[1][[1]]%>%data.frame()%>%select(id, dist_semi_imp),
           all_hh_num_sources[1][[1]]%>%data.frame()%>%select(id, num_sources_semi_imp_1000),
           by = "id"), num_sources_semi_imp_1000 ~ dist_semi_imp))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+rural_hhs = households%>%filter(is.na(town))
+
+
+rural_hhs%>%
+    mutate(dist_to_lake = st_distance(geometry, water_bodies)%>%apply(1, min),
+           dist_priv = st_distance(geometry, wpdx_sources%>%filter(private == 1))%>%apply(1, min),
+           dist_public = st_distance(geometry, wpdx_sources%>%filter(private == 0))%>%apply(1, min))%>%
+  data.frame()%>%
+  filter(min_dist <= 1000)
+             
+             
+           id = row_number())%>%
+    data.frame()%>%
+    select(id, dist_to_lake)
+  
+hh_coords = st_coordinates(rural_hhs)%>%data.frame()%>%
+    mutate(id = row_number())
+
+    # Filter public water sources using dummy columns
+    pub_water_coords = st_coordinates(wpdx_sources%>%filter(private == 0)) %>% data.frame()
+    private_water_coords = st_coordinates(wpdx_sources%>%filter(private == 1)) %>% data.frame()
+
+    # Compute distances
+    priv_dists <- data.frame(get.knnx(private_water_coords, hh_coords %>% select(-id), k = 1)) %>%
+      mutate(id = row_number()) %>%
+      filter(nn.dist <= priv_dist) %>%
+      rename(priv_dist = nn.dist) %>%
+      select(-nn.index)
+
+    pub_dists <- data.frame(get.knnx(pub_water_coords, hh_coords %>% select(-id), k = 1)) %>%
+      mutate(id = row_number()) %>%
+      rename(pub_dist = nn.dist) %>%
+      select(-nn.index)
+
+    facility_dists <- full_join(pub_dists, priv_dists, by = "id") %>%
+      mutate(min_dist = pmin(coalesce(priv_dist, Inf), coalesce(pub_dist, Inf)))
+
+      facility_dists <- full_join(facility_dists, dist_to_lake, by = "id") %>%
+        mutate(min_dist = pmin(min_dist, dist_to_lake))
+
+facility_dists
+  filter(min_dist <= 1000)
+  
+  pub_dists
 ```
 
