@@ -128,8 +128,6 @@ water_sources%>%filter(!dataset %in% c("ministry", "lifeline"))%>%
     nearest_dist = as.numeric(st_distance(geom, nearest_geometry, by_element = T)))%>%
   data.frame()
   filter(nearest_dist > 50 )
-  
-  413/1799
 ```
 
 Summary stats
@@ -565,20 +563,44 @@ plot_summary_line(healthcare_sources, "Healthcare Facilities")
 ```
 # Source congestion
 ```{r}
-tmap_mode(mode = "view")
-water_sources%>%
-  
+source_congestion_1km = water_sources%>%
   filter(private == 0 & semi == 1 & imp == 1)%>%
   st_buffer(1000)%>%
   mutate(n_households_1km = lengths(st_intersects(., households)),
          n_sources_1km = lengths(st_intersects(., water_sources)),
-         source_congestion = n_households_1km/n_sources_1km)%>%
+         n_households_1km_normalised = n_households_1km/n_sources_1km)%>%
+  select(id, n_households_1km_normalised)
   #data.frame()
   tm_shape(.)+
   tm_dots(fill = "source_congestion", fill.scale = tm_scale_continuous_log1p(
     values = "-brewer.RdBu"))
   tm_dots(fill = "source_congestion", 
           fill.scale = tm_scale_continuous(values = c("darkblue", "red2")))
+  
+  
+nearest_source = st_nearest_feature(households, water_sources%>%filter(private == 0 & semi == 1 & imp == 1))
+source_congestion = households %>%
+  mutate(source_id = water_sources$id[nearest_source])%>%
+  group_by(source_id)%>%
+  reframe(source_congestion_nearest = n())
+
+
+source_congestion_full = water_sources%>%
+  filter(private == 0 & semi == 1 & imp == 1)%>%
+  left_join(., source_congestion, by = c("id" = "source_id"))%>%
+  mutate(source_congestion_nearest = ifelse(is.na(source_congestion_nearest), 0, source_congestion_nearest))%>%
+  left_join(., source_congestion_1km%>%st_drop_geometry(), by = "id")%>%
+  select(source_congestion_nearest:n_households_1km_normalised)
+
+st_write(source_congestion_full, "Processed data/Source congestion/20261030_source_congestion.shp")
+
+
+  tm_shape(.)+
+  tm_dots(fill = "source_congestion", fill.scale = tm_scale_continuous_log1p(values ="-brewer.RdBu"))
+  
+  
+  summary(lm(data = source_congestion_full, source_congestion_nearest ~ n_households_1km_normalised))
+
 ```
 
 
