@@ -15,7 +15,7 @@ Set default projection, tmap settings, and standard distance for deduplication (
 ```{r}
 crs = 32636
 
-tmap_mode(mode = "plot")
+tmap_mode(mode = "view")
 
 priv_dist = 30
 dist_thresholds = c(100, 500, 1000, 1500, 2000)
@@ -288,9 +288,9 @@ plot_by_dedup <- function(df, facility_label) {
 
 ```{r}
 rural_hh_dist <- calculate_access_distances(
-  water_sources = wpdx_sources,
+  water_sources = water_sources,
   facility = households%>%filter(is.na(town)),
-  variations = variations)
+  variations = "semi_imp")
 
 rural_hh_dist_sf = rural_hh_dist[1]
 
@@ -307,7 +307,7 @@ nrow(wpdx_sources%>%filter(semi == 1 & imp == 1))
 ```
 
 ```{r}
-rural_hh_dist_sf%>%
+rural_hh_access_by_subcounty = rural_hh_dist_sf%>%
   data.frame()%>%
   mutate(access_1km = ifelse(dist_semi_imp <= 1000, 1, 0))%>%
   group_by(subcounty)%>%
@@ -657,7 +657,7 @@ ggsave("Figures/20260710_montecarlo_1000m.png", plot, width = 10, height = 7, dp
 
 
 
-# Relationships
+# Regressions/statistical tests
 
 Investigating the relationship between household proximity to improved sources and # of sources within 1000m, both through a boxplot and regression
 
@@ -747,5 +747,30 @@ facility_dists
   filter(min_dist <= 1000)
   
   pub_dists
+```
+
+# Income
+```{r}
+income_by_subcounty = read_excel("Raw data/Income/Uganda_RWSS_baseline_HH_Survey_CLEANED_042720_NOLABEL_NONAME.xlsx")%>%
+  select(gps_hidden1latitude, gps_hidden1longitude, income_1year)%>%
+  filter(!is.na(gps_hidden1latitude))%>%
+  st_as_sf(coords = c("gps_hidden1longitude", "gps_hidden1latitude"), crs = 4326)%>%
+  st_transform(crs)%>%
+  st_join(., subcounties)%>%
+  filter(!is.na(subcounty))%>%
+  st_drop_geometry()%>%
+  group_by(subcounty)%>%
+  reframe(n_non_na = n(),
+          median_income = median(income_1year, na.rm = T),
+          mean_income = mean(income_1year, na.rm = T))
+
+subcounty_full = left_join(subcounties, rural_hh_access_by_subcounty, by = "subcounty")%>%
+  left_join(., income_by_subcounty, by = "subcounty")
+
+tm_shape(subcounty_full)+
+  tm_polygons("median_income")
+
+summary(lm(data = subcounty_full, perc_access ~ median_income))
+  
 ```
 
