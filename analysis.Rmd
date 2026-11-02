@@ -107,7 +107,10 @@ healthcare = st_transform(st_read("Raw data/Healthcare Facilities/sub-saharan_he
 ## Deduplicated water sources
 ```{r}
 water_sources = st_transform(st_read("Processed data/water_source_dedups_apr24_2025.gpkg"))
+```
 
+
+```{r}
 wpdx_sources = wdpx_dedup%>%
   mutate(
     cons = 1,
@@ -291,7 +294,10 @@ rural_hh_dist <- calculate_access_distances(
   variations = "semi_imp")
 
 rural_hh_dist_sf = rural_hh_dist[1]
+```
 
+
+```{r}
 plots <- plot_by_dedup(rural_hh_dist[2]%>%data.frame(), "Households")
 
 # To view a specific plot:
@@ -570,13 +576,6 @@ source_congestion_1km = water_sources%>%
          n_sources_1km = lengths(st_intersects(., water_sources)),
          n_households_1km_normalised = n_households_1km/n_sources_1km)%>%
   select(id, n_households_1km_normalised)
-  #data.frame()
-  tm_shape(.)+
-  tm_dots(fill = "source_congestion", fill.scale = tm_scale_continuous_log1p(
-    values = "-brewer.RdBu"))
-  tm_dots(fill = "source_congestion", 
-          fill.scale = tm_scale_continuous(values = c("darkblue", "red2")))
-  
   
 nearest_source = st_nearest_feature(households, water_sources%>%filter(private == 0 & semi == 1 & imp == 1))
 source_congestion = households %>%
@@ -591,16 +590,22 @@ source_congestion_full = water_sources%>%
   mutate(source_congestion_nearest = ifelse(is.na(source_congestion_nearest), 0, source_congestion_nearest))%>%
   left_join(., source_congestion_1km%>%st_drop_geometry(), by = "id")%>%
   select(source_congestion_nearest:n_households_1km_normalised)
+```
 
+
+```{r}
 st_write(source_congestion_full, "Processed data/Source congestion/20261030_source_congestion.shp")
-
-
-  tm_shape(.)+
-  tm_dots(fill = "source_congestion", fill.scale = tm_scale_continuous_log1p(values ="-brewer.RdBu"))
-  
   
   summary(lm(data = source_congestion_full, source_congestion_nearest ~ n_households_1km_normalised))
+```
 
+```{r}
+source_congestion_subcounty = source_congestion_full%>%
+  st_join(., subcounties)%>%
+  filter(!is.na(subcounty))%>%
+  group_by(subcounty)%>%
+  reframe(n_sources = n(),
+          mean_congestion = mean(source_congestion_nearest, na.rm = T))
 ```
 
 
@@ -787,12 +792,24 @@ income_by_subcounty = read_excel("Raw data/Income/Uganda_RWSS_baseline_HH_Survey
           mean_income = mean(income_1year, na.rm = T))
 
 subcounty_full = left_join(subcounties, rural_hh_access_by_subcounty, by = "subcounty")%>%
-  left_join(., income_by_subcounty, by = "subcounty")
+  left_join(., income_by_subcounty, by = "subcounty")%>%
+  left_join(., source_congestion_subcounty, by = "subcounty")
 
+subcounty_full
+```
+
+
+```{r}
 tm_shape(subcounty_full)+
   tm_polygons("median_income")
 
 summary(lm(data = subcounty_full, perc_access ~ median_income))
+
+subcounty_full%>%
+  ggplot(aes(median_income, mean_congestion))+
+  geom_point()+
+  theme_bw()+
+  labs(x = "Median Income within Subcounty", y = "Mean Source Congestion within Subcounty")
   
 ```
 
