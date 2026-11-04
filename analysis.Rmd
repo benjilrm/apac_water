@@ -25,6 +25,8 @@ source_names <- c(all = "Any Source (incl. surf. water)",
                     nosurf = "Any Source (excl. surf. water)",
                     imp = "Improved Source",
                     impyearround = "Year-Round Improved Source")
+
+shillings_per_usd = 3675 #mean conversion rate in September 2019
 ```
 
 # Import Data
@@ -40,6 +42,13 @@ Obtained from [UNHCR](https://data.unhcr.org/en/documents/details/76498)
 subcounties = st_transform(st_read("Raw data/Subcounties/subcounties_2019.shp"), crs)%>%
   filter(District %in% c("APAC", "KWANIA"))%>%
   select(sname2019)%>%
+  rename(subcounty = 1)
+
+
+subcounties_2006 = st_read("Raw data/Subcounties/2010 boundaries/Uganda_Subcounties2010.shp")%>%
+  st_transform(crs)%>%
+  filter(DNAME_2006 == "APAC" & CNAME_2006 != "KOLE")%>%
+  select(SNAME_2006)%>%
   rename(subcounty = 1)
 ```
 
@@ -66,7 +75,7 @@ households = st_transform(st_read("Raw data/Households/households_raw.gpkg"), cr
   mutate(id = row_number())%>%
   select(id, town)%>%
   rename(geometry = geom)%>%
-  st_join(., subcounties)
+  st_join(., subcounties_2006)
 
 paste(round(nrow(households%>%filter(is.na(town)))/nrow(households)*100, 2), "% of households outside of town centers")
 paste(nrow(households%>%filter(is.na(town))), "households outside of town centers")
@@ -596,12 +605,12 @@ source_congestion_full = water_sources%>%
 ```{r}
 st_write(source_congestion_full, "Processed data/Source congestion/20261030_source_congestion.shp")
   
-  summary(lm(data = source_congestion_full, source_congestion_nearest ~ n_households_1km_normalised))
+summary(lm(data = source_congestion_full, source_congestion_nearest ~ n_households_1km_normalised))
 ```
 
 ```{r}
 source_congestion_subcounty = source_congestion_full%>%
-  st_join(., subcounties)%>%
+  st_join(., subcounties_2006)%>%
   filter(!is.na(subcounty))%>%
   group_by(subcounty)%>%
   reframe(n_sources = n(),
@@ -779,19 +788,21 @@ facility_dists
 # Income
 ```{r}
 income_by_subcounty = read_excel("Raw data/Income/Uganda_RWSS_baseline_HH_Survey_CLEANED_042720_NOLABEL_NONAME.xlsx")%>%
-  select(gps_hidden1latitude, gps_hidden1longitude, income_1year)%>%
+  select(gps_hidden1latitude, gps_hidden1longitude, income_1year, major_1year)%>%
   filter(!is.na(gps_hidden1latitude))%>%
   st_as_sf(coords = c("gps_hidden1longitude", "gps_hidden1latitude"), crs = 4326)%>%
   st_transform(crs)%>%
-  st_join(., subcounties)%>%
+  st_join(., subcounties_2006)%>%
   filter(!is.na(subcounty))%>%
   st_drop_geometry()%>%
+  mutate(income_1year_usd = income_1year / shillings_per_usd,
+         expend_1year_usd = major_1year / shillings_per_usd)%>%
   group_by(subcounty)%>%
   reframe(n_non_na = n(),
-          median_income = median(income_1year, na.rm = T),
-          mean_income = mean(income_1year, na.rm = T))
+          median_income = median(income_1year_usd, na.rm = T),
+          median_expend = median(expend_1year_usd, na.rm = T))
 
-subcounty_full = left_join(subcounties, rural_hh_access_by_subcounty, by = "subcounty")%>%
+subcounty_full = left_join(subcounties_2006, rural_hh_access_by_subcounty, by = "subcounty")%>%
   left_join(., income_by_subcounty, by = "subcounty")%>%
   left_join(., source_congestion_subcounty, by = "subcounty")
 
@@ -803,10 +814,38 @@ subcounty_full
 tm_shape(subcounty_full)+
   tm_polygons("median_income")
 
+
+income_by_subcounty%>%
+  filter(expend_1year_usd < 4000 & income_1year_usd < 5000)%>%
+  ggplot(aes(income_1year_usd, expend_1year_usd))+
+  geom_point()+
+  theme_bw()+
+  labs(x = "Median Annual Household Income (USD)", y = "Median Annual Household \n Major Expenditures (USD)")
+
+summary(lm(data = subcounty_full, perc_access ~ median_expend))
 summary(lm(data = subcounty_full, perc_access ~ median_income))
 
+summary(lm(data = subcounty_full, mean_congestion ~ median_income))
+
 subcounty_full%>%
-  ggplot(aes(median_income, mean_congestion))+
+  ggplot(aes(median_expend, perc_access))+
+  geom_point()+
+  theme_bw()+
+  labs(x = "Median annual household major expenditures (USD)", y = "% of households in subcounty \n within 1km of an improved source")
+
+subcounty_full%>%
+  ggplot(aes(median_income, perc_access))+
+  geom_point()+
+  theme_bw()+
+  labs(x = "Median annual household major expenditures (USD)", y = "% of households in subcounty \n within 1km of an improved source")
+
+
+```
+
+
+```{r}
+subcounty_full%>%
+  ggplot(aes(median_income, median_expend))+
   geom_point()+
   theme_bw()+
   labs(x = "Median Income within Subcounty", y = "Mean Source Congestion within Subcounty")
